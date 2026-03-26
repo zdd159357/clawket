@@ -12,6 +12,7 @@ export type UiMessage = {
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
   text: string;
+  idempotencyKey?: string;
   timestampMs?: number;
   streaming?: boolean;
   imageUris?: string[];

@@ -631,7 +631,11 @@ export function ChatScreenLayout({ controller, insets, onOpenSidebar, onAddGatew
           screenWidth: controller.preview.screenWidth,
           setPreviewIndex: controller.preview.setPreviewIndex,
         }}
-        renderSelectedMessage={() => renderMessageBubble(selectedMessage!, { overlayMode: true, forceSelected: true })}
+        renderSelectedMessage={() => (
+          selectedMessage
+            ? renderMessageBubble(selectedMessage, { overlayMode: true, forceSelected: true })
+            : null
+        )}
         selectedFrames={selectedFrames}
         selectedMessageFavorited={selectedMessageFavorited}
         selectedMessage={selectedMessage}

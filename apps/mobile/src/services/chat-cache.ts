@@ -11,6 +11,7 @@ export type CachedMessage = {
   id: string;
   role: "user" | "assistant" | "system" | "tool";
   text: string;
+  idempotencyKey?: string;
   timestampMs?: number;
   imageUris?: string[];
   imageMetas?: UiMessage["imageMetas"];
@@ -132,6 +133,7 @@ function toSlim(msg: UiMessage): CachedMessage {
     role: msg.role,
     text: msg.text,
   };
+  if (msg.idempotencyKey) slim.idempotencyKey = msg.idempotencyKey;
   if (msg.timestampMs) slim.timestampMs = msg.timestampMs;
   if (msg.imageUris?.length) slim.imageUris = msg.imageUris;
   if (msg.imageMetas?.length) slim.imageMetas = msg.imageMetas;

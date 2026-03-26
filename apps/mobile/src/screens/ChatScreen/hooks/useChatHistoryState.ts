@@ -93,6 +93,7 @@ function areUiMessagesEquivalent(prev: UiMessage[], next: UiMessage[]): boolean 
     if (a.id !== b.id) return false;
     if (a.role !== b.role) return false;
     if (a.text !== b.text) return false;
+    if (a.idempotencyKey !== b.idempotencyKey) return false;
     if (a.timestampMs !== b.timestampMs) return false;
     if (a.streaming !== b.streaming) return false;
     if (a.modelLabel !== b.modelLabel) return false;
@@ -482,6 +483,7 @@ export function useChatHistoryState({
             id: userMsgId,
             role: 'user',
             text: displayText,
+            idempotencyKey,
             timestampMs: msgTs > 0 ? msgTs : undefined,
             imageUris,
             imageMetas,

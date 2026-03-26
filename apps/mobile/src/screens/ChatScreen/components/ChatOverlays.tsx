@@ -209,6 +209,7 @@ export function ChatOverlays({
     }),
     [copyButtonSize, insetsTop, modalBottomInset, screenHeight, screenWidth, selectedFrames],
   );
+  const shouldRenderSelectedMessageOverlay = !!selectionLayout && !!selectedMessage;
 
   const animatedCloneStyle = React.useMemo(
     () => ({
@@ -242,7 +243,7 @@ export function ChatOverlays({
       >
         <View style={styles.selectionModalRoot}>
           <Pressable style={styles.selectionModalMask} onPress={clearSelection} />
-          {!!selectionLayout ? (
+          {shouldRenderSelectedMessageOverlay ? (
             <>
               <Animated.View
                 style={[

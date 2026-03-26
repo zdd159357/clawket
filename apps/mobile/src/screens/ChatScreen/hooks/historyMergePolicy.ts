@@ -108,7 +108,15 @@ function normalizeUserText(text: string): string {
     .trim();
 }
 
+function areMessagesLinkedByIdempotency(a: UiMessage, b: UiMessage): boolean {
+  return !!a.idempotencyKey && !!b.idempotencyKey && a.idempotencyKey === b.idempotencyKey;
+}
+
 function areLikelySameUserMessage(a: UiMessage, b: UiMessage): boolean {
+  if (areMessagesLinkedByIdempotency(a, b)) {
+    return true;
+  }
+
   const timestampA = a.timestampMs ?? 0;
   const timestampB = b.timestampMs ?? 0;
   const closeInTime = timestampA > 0 && timestampB > 0 && Math.abs(timestampA - timestampB) <= USER_MATCH_GRACE_MS;
@@ -120,7 +128,9 @@ function areLikelySameUserMessage(a: UiMessage, b: UiMessage): boolean {
     return true;
   }
 
-  return !!a.imageUris?.length && !!b.imageUris?.length;
+  // Do not treat image-bearing messages as identical based only on timing.
+  // Consecutive image sends can occur within the same minute and must remain distinct.
+  return false;
 }
 
 function areLikelySameAssistantMessage(a: UiMessage, b: UiMessage): boolean {

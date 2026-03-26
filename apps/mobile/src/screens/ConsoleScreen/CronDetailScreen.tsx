@@ -230,7 +230,7 @@ export function CronDetailScreen(): React.JSX.Element {
   if (loading) {
     return (
       <View style={styles.root}>
-        <ScreenHeader title={t('Cron Job')} topInset={insets.top} onBack={() => navigation.goBack()} dismissStyle="close" />
+        <ScreenHeader title="" topInset={insets.top} onBack={() => navigation.goBack()} dismissStyle="close" />
         <LoadingState message={t('Loading cron job...')} />
       </View>
     );
@@ -239,7 +239,7 @@ export function CronDetailScreen(): React.JSX.Element {
   if (error || !job) {
     return (
       <View style={styles.root}>
-        <ScreenHeader title={t('Cron Job')} topInset={insets.top} onBack={() => navigation.goBack()} dismissStyle="close" />
+        <ScreenHeader title="" topInset={insets.top} onBack={() => navigation.goBack()} dismissStyle="close" />
         <View style={styles.centerState}>
           <Text style={styles.errorTitle}>{t('Failed to load cron job')}</Text>
           <Text style={styles.stateText}>{error ?? t('Unknown error')}</Text>
@@ -254,7 +254,7 @@ export function CronDetailScreen(): React.JSX.Element {
   return (
     <View style={styles.root}>
       <ScreenHeader
-        title={job.name}
+        title=""
         topInset={insets.top}
         onBack={() => navigation.goBack()}
         dismissStyle="close"
@@ -296,14 +296,22 @@ export function CronDetailScreen(): React.JSX.Element {
           />
         }
       >
-        <View style={styles.sectionCard}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>{t('Info')}</Text>
+        <View style={styles.heroCard}>
+          <View style={styles.heroHeadingRow}>
+            <Text style={styles.heroTitle}>{job.name}</Text>
             {job.deleteAfterRun ? (
               <View style={styles.badge}>
                 <Text style={styles.badgeText}>{t('Deletes after run')}</Text>
               </View>
             ) : null}
+          </View>
+          <Text style={styles.heroMeta}>{t('Cron {{id}}', { id: job.id })}</Text>
+          <Text style={styles.heroSummary}>{describeScheduleHuman(job.schedule, t)}</Text>
+        </View>
+
+        <View style={styles.sectionCard}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>{t('Info')}</Text>
           </View>
 
           <View style={styles.infoRow}>
@@ -482,6 +490,33 @@ function createStyles(colors: ReturnType<typeof useAppTheme>['theme']['colors'])
     content: {
       ...createCardContentStyle(),
       gap: Space.md,
+    },
+    heroCard: {
+      gap: Space.xs,
+      paddingTop: Space.xs,
+    },
+    heroHeadingRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      justifyContent: 'space-between',
+      gap: Space.sm,
+    },
+    heroTitle: {
+      flex: 1,
+      color: colors.text,
+      fontSize: FontSize.xxl,
+      fontWeight: FontWeight.bold,
+      lineHeight: 34,
+    },
+    heroMeta: {
+      color: colors.textSubtle,
+      fontSize: FontSize.sm,
+      fontWeight: FontWeight.medium,
+    },
+    heroSummary: {
+      color: colors.textMuted,
+      fontSize: FontSize.md,
+      lineHeight: 20,
     },
     sectionCard: {
       backgroundColor: colors.surface,

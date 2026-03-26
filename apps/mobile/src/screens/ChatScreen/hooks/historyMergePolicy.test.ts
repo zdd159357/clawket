@@ -35,6 +35,77 @@ describe('preserveOptimisticAssistantMessage', () => {
     expect(preserveOptimisticAssistantMessage(previousMessages, nextMessages)).toEqual(nextMessages);
   });
 
+  it('does not conflate consecutive image-only user messages during history refresh', () => {
+    const previousMessages: UiMessage[] = [
+      { id: 'u1', role: 'user', text: 'Older question', timestampMs: 1_000 },
+      { id: 'a1', role: 'assistant', text: 'Older answer', timestampMs: 2_000 },
+      {
+        id: 'usr_3000',
+        role: 'user',
+        text: '📷 1 image',
+        timestampMs: 3_000,
+        imageUris: ['file:///image-b.jpg'],
+      },
+    ];
+    const nextMessages: UiMessage[] = [
+      { id: 'u1', role: 'user', text: 'Older question', timestampMs: 1_000 },
+      { id: 'a1', role: 'assistant', text: 'Older answer', timestampMs: 2_000 },
+      {
+        id: 'h_user_2900',
+        role: 'user',
+        text: '',
+        timestampMs: 2_900,
+        imageUris: ['file:///image-a.jpg'],
+      },
+    ];
+
+    expect(preserveOptimisticAssistantMessage(previousMessages, nextMessages)).toEqual([
+      { id: 'u1', role: 'user', text: 'Older question', timestampMs: 1_000 },
+      { id: 'a1', role: 'assistant', text: 'Older answer', timestampMs: 2_000 },
+      {
+        id: 'h_user_2900',
+        role: 'user',
+        text: '',
+        timestampMs: 2_900,
+        imageUris: ['file:///image-a.jpg'],
+      },
+      {
+        id: 'usr_3000',
+        role: 'user',
+        text: '📷 1 image',
+        timestampMs: 3_000,
+        imageUris: ['file:///image-b.jpg'],
+      },
+    ]);
+  });
+
+  it('drops an optimistic image-only message once matching history arrives with the same idempotency key', () => {
+    const previousMessages: UiMessage[] = [
+      { id: 'u1', role: 'user', text: 'Older question', timestampMs: 1_000 },
+      {
+        id: 'usr_3000',
+        role: 'user',
+        text: '📷 1 image',
+        idempotencyKey: 'run_same',
+        timestampMs: 3_000,
+        imageUris: ['file:///pending-image.jpg'],
+      },
+    ];
+    const nextMessages: UiMessage[] = [
+      { id: 'u1', role: 'user', text: 'Older question', timestampMs: 1_000 },
+      {
+        id: 'h_user_3200',
+        role: 'user',
+        text: '',
+        idempotencyKey: 'run_same',
+        timestampMs: 3_200,
+        imageUris: ['file:///cached-image.jpg'],
+      },
+    ];
+
+    expect(preserveOptimisticAssistantMessage(previousMessages, nextMessages)).toEqual(nextMessages);
+  });
+
   it('does not resurrect an older optimistic slash command when later turns already exist', () => {
     const previousMessages: UiMessage[] = [
       { id: 'u1', role: 'user', text: 'Older question', timestampMs: 1_000 },

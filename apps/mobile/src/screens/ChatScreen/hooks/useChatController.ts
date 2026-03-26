@@ -1497,6 +1497,7 @@ export function useChatController({
       const sessionKey = history.sessionKey;
       if (!sessionKey) return;
       const localTimestamp = Date.now();
+      const idempotencyKey = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
       const realImages = images.filter((i) => i.mimeType.startsWith("image/"));
       const files = images.filter((i) => !i.mimeType.startsWith("image/"));
       const fileNames = files
@@ -1514,6 +1515,7 @@ export function useChatController({
         id: `usr_${localTimestamp}`,
         role: "user",
         text: text || autoText || "",
+        idempotencyKey,
         timestampMs: localTimestamp,
         imageUris:
           realImages.length > 0
@@ -1530,7 +1532,6 @@ export function useChatController({
       };
       history.setMessages((prev) => [...prev, uiMsg]);
 
-      const idempotencyKey = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
       const claimsActiveRun = !currentRunIdRef.current;
       if (claimsActiveRun) {
         clearTransientRunPresentation({ preserveCurrentStream: true });
@@ -1556,7 +1557,7 @@ export function useChatController({
       if (images.length > 0) {
         cacheMessageImages(
           sessionKey,
-          text || " ",
+          uiMsg.text,
           images.map((image) => ({
             base64: image.base64,
             mimeType: image.mimeType,

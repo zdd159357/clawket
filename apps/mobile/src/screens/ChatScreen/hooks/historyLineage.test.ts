@@ -33,10 +33,12 @@ describe('historyLineage', () => {
       id: '1',
       role: 'assistant',
       text: 'hello',
+      idempotencyKey: 'run_1',
     })).toMatchObject({
       id: '1',
       role: 'assistant',
       text: 'hello',
+      idempotencyKey: 'run_1',
       streaming: false,
     });
   });

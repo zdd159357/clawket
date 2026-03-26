@@ -110,6 +110,7 @@ describe("ChatCacheService", () => {
         makeMsg({
           id: "1",
           text: "Photo",
+          idempotencyKey: "run_123",
           imageUris: ["file:///photo.png"],
           imageMetas: [{ uri: "file:///photo.png", width: 100, height: 100 }],
           streaming: true,
@@ -130,6 +131,7 @@ describe("ChatCacheService", () => {
 
       const result = await ChatCacheService.getMessages("gw1", "a1", "main");
       expect(result).toHaveLength(1);
+      expect(result[0].idempotencyKey).toBe("run_123");
       expect(result[0].imageUris).toEqual(["file:///photo.png"]);
       expect(result[0].imageMetas).toEqual([
         { uri: "file:///photo.png", width: 100, height: 100 },
