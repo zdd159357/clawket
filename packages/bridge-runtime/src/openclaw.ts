@@ -214,6 +214,139 @@ export async function configureOpenClawLanAccess(params: {
   };
 }
 
+export type OpenClawDoctorCheckResult = {
+  name: string;
+  status: 'pass' | 'fail' | 'warn' | 'skip' | string;
+  message?: string;
+};
+
+export type OpenClawDoctorResult = {
+  ok: boolean;
+  checks: OpenClawDoctorCheckResult[];
+  summary: string;
+  raw?: string;
+};
+
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
+}
+
+export async function runOpenClawDoctor(): Promise<OpenClawDoctorResult> {
+  const openclaw = resolveOpenClawPaths();
+  try {
+    const { stdout } = await runOpenClawCli(['doctor', '--json'], openclaw);
+    try {
+      const parsed = parseEmbeddedJsonValue(stdout) as {
+        ok?: boolean;
+        checks?: unknown[];
+        summary?: string;
+      };
+      const checks: OpenClawDoctorCheckResult[] = Array.isArray(parsed.checks)
+        ? parsed.checks
+          .filter((c): c is Record<string, unknown> => typeof c === 'object' && c != null)
+          .map((c) => ({
+            name: typeof c.name === 'string' ? c.name : 'unknown',
+            status: typeof c.status === 'string' ? c.status : 'unknown',
+            message: typeof c.message === 'string' ? c.message : undefined,
+          }))
+        : [];
+      return {
+        ok: parsed.ok === true,
+        checks,
+        summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+      };
+    } catch {
+      // --json not supported or output not JSON; return raw stdout
+      return {
+        ok: true,
+        checks: [],
+        summary: '',
+        raw: stripAnsi(stdout.trim()),
+      };
+    }
+  } catch (error) {
+    // doctor may exit non-zero when issues are found; try to parse stdout
+    if (isExecFileError(error) && typeof error.stdout === 'string' && error.stdout.trim()) {
+      try {
+        const parsed = parseEmbeddedJsonValue(error.stdout) as {
+          ok?: boolean;
+          checks?: unknown[];
+          summary?: string;
+        };
+        const checks: OpenClawDoctorCheckResult[] = Array.isArray(parsed.checks)
+          ? parsed.checks
+            .filter((c): c is Record<string, unknown> => typeof c === 'object' && c != null)
+            .map((c) => ({
+              name: typeof c.name === 'string' ? c.name : 'unknown',
+              status: typeof c.status === 'string' ? c.status : 'unknown',
+              message: typeof c.message === 'string' ? c.message : undefined,
+            }))
+          : [];
+        return {
+          ok: parsed.ok === true,
+          checks,
+          summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+        };
+      } catch {
+        return {
+          ok: false,
+          checks: [],
+          summary: '',
+          raw: stripAnsi(error.stdout.trim()),
+        };
+      }
+    }
+    // If --json is not supported, try without --json
+    try {
+      const { stdout } = await runOpenClawCli(['doctor'], openclaw);
+      return {
+        ok: true,
+        checks: [],
+        summary: '',
+        raw: stripAnsi(stdout.trim()),
+      };
+    } catch (fallbackError) {
+      if (isExecFileError(fallbackError) && typeof fallbackError.stdout === 'string' && fallbackError.stdout.trim()) {
+        return {
+          ok: false,
+          checks: [],
+          summary: '',
+          raw: stripAnsi(fallbackError.stdout.trim()),
+        };
+      }
+      throw formatOpenClawCliError(['doctor'], error);
+    }
+  }
+}
+
+export type OpenClawDoctorFixResult = {
+  ok: boolean;
+  summary: string;
+  raw?: string;
+};
+
+export async function runOpenClawDoctorFix(): Promise<OpenClawDoctorFixResult> {
+  const openclaw = resolveOpenClawPaths();
+  try {
+    const { stdout } = await runOpenClawCli(['doctor', '--fix'], openclaw);
+    return {
+      ok: true,
+      summary: '',
+      raw: stripAnsi(stdout.trim()),
+    };
+  } catch (error) {
+    if (isExecFileError(error) && typeof error.stdout === 'string' && error.stdout.trim()) {
+      return {
+        ok: false,
+        summary: '',
+        raw: stripAnsi(error.stdout.trim()),
+      };
+    }
+    throw formatOpenClawCliError(['doctor', '--fix'], error);
+  }
+}
+
 export async function restartOpenClawGateway(): Promise<OpenClawGatewayRestartResult> {
   const openclaw = resolveOpenClawPaths();
   const restart = await runOpenClawDaemonCommand(['gateway', 'restart', '--json'], openclaw);

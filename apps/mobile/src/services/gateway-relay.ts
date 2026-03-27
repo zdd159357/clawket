@@ -263,6 +263,141 @@ export function parseRelayBootstrapError(control: RelayControlFrame): { requestI
   };
 }
 
+export type RelayDoctorCheckResult = {
+  name: string;
+  status: 'pass' | 'fail' | 'warn' | 'skip' | string;
+  message?: string;
+};
+
+export type RelayDoctorResult = {
+  ok: boolean;
+  checks: RelayDoctorCheckResult[];
+  summary: string;
+  raw?: string;
+};
+
+export type PendingRelayDoctorRequest = {
+  requestId: string;
+  startedAt: number;
+  timeout: ReturnType<typeof setTimeout>;
+  resolve: (result: RelayDoctorResult) => void;
+  reject: (error: Error) => void;
+};
+
+export class RelayDoctorRequestError extends Error {
+  public readonly code: 'relay_doctor_timeout' | 'relay_doctor_failed' | 'relay_doctor_fix_timeout' | 'relay_doctor_fix_failed';
+  public readonly detailCode?: string;
+
+  constructor(
+    code: 'relay_doctor_timeout' | 'relay_doctor_failed' | 'relay_doctor_fix_timeout' | 'relay_doctor_fix_failed',
+    message: string,
+    detailCode?: string,
+  ) {
+    super(message);
+    this.name = 'RelayDoctorRequestError';
+    this.code = code;
+    this.detailCode = detailCode;
+  }
+}
+
+export function buildRelayDoctorRequestFrame(params: {
+  requestId: string;
+}): string {
+  return `${RELAY_CONTROL_PREFIX}${JSON.stringify({
+    type: 'control',
+    event: 'doctor.request',
+    requestId: params.requestId,
+  })}`;
+}
+
+export function parseRelayDoctorResult(control: RelayControlFrame): { requestId?: string; result: RelayDoctorResult } | null {
+  if (control.event !== 'doctor.result') return null;
+  const payload = unwrapRelayControlPayload(control.payload);
+  const requestId = trimToUndefined(payload.requestId);
+  const checks = Array.isArray(payload.checks)
+    ? (payload.checks as Record<string, unknown>[])
+      .filter((c): c is Record<string, unknown> => typeof c === 'object' && c != null)
+      .map((c) => ({
+        name: typeof c.name === 'string' ? c.name : 'unknown',
+        status: (typeof c.status === 'string' ? c.status : 'unknown') as RelayDoctorCheckResult['status'],
+        message: typeof c.message === 'string' ? c.message : undefined,
+      }))
+    : [];
+  return {
+    requestId,
+    result: {
+      ok: payload.ok === true,
+      checks,
+      summary: typeof payload.summary === 'string' ? payload.summary : '',
+      raw: typeof payload.raw === 'string' ? payload.raw : undefined,
+    },
+  };
+}
+
+export function parseRelayDoctorError(control: RelayControlFrame): { requestId?: string; error: RelayDoctorRequestError } | null {
+  if (control.event !== 'doctor.error') return null;
+  const payload = unwrapRelayControlPayload(control.payload);
+  const requestId = trimToUndefined(payload.requestId);
+  const detailCode = trimToUndefined(payload.code);
+  const rawMessage = trimToUndefined(payload.message) ?? 'Doctor command failed.';
+  const message = detailCode ? `[${detailCode}] ${rawMessage}` : rawMessage;
+  return {
+    requestId,
+    error: new RelayDoctorRequestError('relay_doctor_failed', message, detailCode),
+  };
+}
+
+export type RelayDoctorFixResult = {
+  ok: boolean;
+  summary: string;
+  raw?: string;
+};
+
+export type PendingRelayDoctorFixRequest = {
+  requestId: string;
+  startedAt: number;
+  timeout: ReturnType<typeof setTimeout>;
+  resolve: (result: RelayDoctorFixResult) => void;
+  reject: (error: Error) => void;
+};
+
+export function buildRelayDoctorFixRequestFrame(params: {
+  requestId: string;
+}): string {
+  return `${RELAY_CONTROL_PREFIX}${JSON.stringify({
+    type: 'control',
+    event: 'doctor-fix.request',
+    requestId: params.requestId,
+  })}`;
+}
+
+export function parseRelayDoctorFixResult(control: RelayControlFrame): { requestId?: string; result: RelayDoctorFixResult } | null {
+  if (control.event !== 'doctor-fix.result') return null;
+  const payload = unwrapRelayControlPayload(control.payload);
+  const requestId = trimToUndefined(payload.requestId);
+  return {
+    requestId,
+    result: {
+      ok: payload.ok === true,
+      summary: typeof payload.summary === 'string' ? payload.summary : '',
+      raw: typeof payload.raw === 'string' ? payload.raw : undefined,
+    },
+  };
+}
+
+export function parseRelayDoctorFixError(control: RelayControlFrame): { requestId?: string; error: RelayDoctorRequestError } | null {
+  if (control.event !== 'doctor-fix.error') return null;
+  const payload = unwrapRelayControlPayload(control.payload);
+  const requestId = trimToUndefined(payload.requestId);
+  const detailCode = trimToUndefined(payload.code);
+  const rawMessage = trimToUndefined(payload.message) ?? 'Doctor fix command failed.';
+  const message = detailCode ? `[${detailCode}] ${rawMessage}` : rawMessage;
+  return {
+    requestId,
+    error: new RelayDoctorRequestError('relay_doctor_fix_failed', message, detailCode),
+  };
+}
+
 export function buildRelayClientWsUrl(
   relayUrl: string,
   relayGatewayId: string,
