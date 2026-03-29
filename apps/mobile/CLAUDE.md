@@ -2,7 +2,7 @@
 
 Clawket is a mobile client for OpenClaw (iOS/Android, React Native + Expo) inside the Clawket monorepo.
 
-For OpenClaw protocol details and reference implementations, see: `../../../../openclaw`
+For OpenClaw protocol details and reference implementations, see: `../../../../openclaw` or `/Users/lucy/Desktop/op/openclaw`
 
 If the task involves Android development or building an Android release package, refer to `docs/android-build.md`.
 
@@ -22,6 +22,13 @@ This app lives inside the Clawket monorepo. When your task involves connection, 
 
 ## Gateway Config Safety
 - Any flow that patches Gateway config must show a secondary confirmation dialog, because the change will restart Gateway and may interrupt active OpenClaw tasks.
+
+## Global Loading Overlay Rules
+- Use the shared global loading overlay for transient app-wide loading states that should appear above the current UI without tearing down the screen underneath.
+- Preferred entrypoint: `src/contexts/GlobalLoadingOverlayContext.tsx` with `useGlobalLoadingOverlay()`. The root overlay component is `src/components/ui/GlobalLoadingOverlay.tsx`.
+- `useGatewayOverlay`, `GatewayOverlayProvider`, and `GatewaySwitchOverlay` still exist, but they are compatibility aliases. New work should target the global naming rather than adding more Gateway-specific overlay usage.
+- Use `LoadingState` only for genuine screen-level loading pages. If the UX should keep the current page visible and show a centered spinner above it, use the global overlay instead.
+- If the user can dismiss a modal while an action is still running, pair the global overlay with `usePreventRemove` or equivalent exit confirmation logic so swipes/back actions do not silently interrupt work.
 
 ## Release Update Modal
 - The Chat first-screen release/update modal content lives in `src/features/app-updates/currentAnnouncement.ts`.

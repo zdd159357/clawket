@@ -22,6 +22,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { ConfigTab } from './src/screens/ConfigScreen/ConfigTab';
 import { ChatTab } from './src/screens/ChatScreen/ChatTab';
 import { ConsoleTab } from './src/screens/ConsoleScreen/ConsoleTab';
+import { OpenClawPermissionsScreen } from './src/screens/ConfigScreen/OpenClawPermissionsScreen';
 import {
   renderConsoleModalScreens,
   type ConsoleStackParamList,
@@ -33,10 +34,10 @@ import {
   OfficeGuideOverlay,
 } from './src/screens/OfficeScreen/OfficeGuideOverlay';
 import { AppContextProvider, useAppContext } from './src/contexts/AppContext';
-import { GatewayOverlayProvider, useGatewayOverlay } from './src/contexts/GatewayOverlayContext';
+import { GlobalLoadingOverlayProvider, useGlobalLoadingOverlay } from './src/contexts/GlobalLoadingOverlayContext';
 import { GatewayScannerProvider } from './src/contexts/GatewayScannerContext';
 import { ProPaywallProvider, useProPaywall } from './src/contexts/ProPaywallContext';
-import { GatewaySwitchOverlay } from './src/components/ui';
+import { GlobalLoadingOverlay } from './src/components/ui';
 import { DebugOverlay } from './src/components/chat/DebugOverlay';
 import { ProPaywallOverlay } from './src/components/pro/ProPaywallOverlay';
 import { loadAgentAvatars } from './src/services/agent-avatar';
@@ -84,6 +85,7 @@ type RootTabParamList = {
 
 type RootStackParamList = {
   MainTabs: NavigatorScreenParams<RootTabParamList> | undefined;
+  OpenClawPermissions: undefined;
 } & ConsoleStackParamList;
 
 const RootStack = createNativeStackNavigator<RootStackParamList>();
@@ -981,10 +983,26 @@ function AppContent({
   }), []);
 
   const rootConsoleModalScreenOptions = useConsoleRootModalScreenOptions();
+  const rootModalScreenOptions = useMemo(() => {
+    if (Platform.OS !== 'ios') {
+      return {
+        animation: 'slide_from_right' as const,
+        contentStyle: { backgroundColor: theme.colors.background },
+        headerShown: true,
+      };
+    }
+    return {
+      animation: 'slide_from_bottom' as const,
+      presentation: 'modal' as const,
+      contentStyle: { backgroundColor: theme.colors.background },
+      gestureEnabled: true,
+      headerShown: true,
+    };
+  }, [theme.colors.background]);
 
   return (
     <AppContextProvider value={appContextValue}>
-    <GatewayOverlayProvider>
+    <GlobalLoadingOverlayProvider>
     <GatewayScannerProvider>
       <NavigationContainer
         ref={rootNavigationRef}
@@ -1073,6 +1091,11 @@ function AppContent({
               </Tab.Navigator>
             )}
           </RootStack.Screen>
+          <RootStack.Screen
+            name="OpenClawPermissions"
+            component={OpenClawPermissionsScreen}
+            options={rootModalScreenOptions}
+          />
           <React.Fragment>
             {renderConsoleModalScreens({
               ...rootConsoleModalScreenOptions,
@@ -1132,7 +1155,7 @@ function AppContent({
       <GlobalGatewayOverlay />
       <GlobalProPaywallOverlay />
     </GatewayScannerProvider>
-    </GatewayOverlayProvider>
+    </GlobalLoadingOverlayProvider>
     </AppContextProvider>
   );
 }
@@ -1166,8 +1189,8 @@ function OfficeDebugOverlay(): React.JSX.Element | null {
 }
 
 function GlobalGatewayOverlay(): React.JSX.Element | null {
-  const { overlayMessage } = useGatewayOverlay();
-  return <GatewaySwitchOverlay visible={!!overlayMessage} message={overlayMessage ?? undefined} />;
+  const { loadingMessage } = useGlobalLoadingOverlay();
+  return <GlobalLoadingOverlay visible={!!loadingMessage} message={loadingMessage ?? undefined} />;
 }
 
 function GlobalProPaywallOverlay(): React.JSX.Element | null {

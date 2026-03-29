@@ -72,6 +72,7 @@ import {
   buildRelayBootstrapRequestFrame,
   buildRelayDoctorRequestFrame,
   buildRelayDoctorFixRequestFrame,
+  buildRelayPermissionsRequestFrame,
   lookupRelayRoute,
   parseRelayBootstrapError,
   parseRelayBootstrapIssued,
@@ -80,6 +81,8 @@ import {
   parseRelayDoctorFixError,
   parseRelayDoctorFixResult,
   parseRelayDoctorResult,
+  parseRelayPermissionsError,
+  parseRelayPermissionsResult,
   RELAY_CONTROL_PREFIX,
   RelayBootstrapRequestError,
   RelayDoctorRequestError,
@@ -92,7 +95,15 @@ import {
   tryConnectRelayFastPath,
   tryConnectViaRelay,
 } from './gateway-relay';
-import type { PendingRelayBootstrapRequest, PendingRelayDoctorRequest, PendingRelayDoctorFixRequest, RelayDoctorResult, RelayDoctorFixResult } from './gateway-relay';
+import type {
+  PendingRelayBootstrapRequest,
+  PendingRelayDoctorFixRequest,
+  PendingRelayDoctorRequest,
+  PendingRelayPermissionsRequest,
+  RelayDoctorFixResult,
+  RelayDoctorResult,
+  RelayPermissionsResult,
+} from './gateway-relay';
 import { APP_PACKAGE_VERSION } from '../constants/app-version';
 import { getRuntimeClientId, getRuntimeDeviceFamily, getRuntimePlatform } from '../utils/platform';
 
@@ -146,6 +157,7 @@ export class GatewayClient {
   private pendingRelayBootstrapRequests = new Map<string, PendingRelayBootstrapRequest>();
   private pendingRelayDoctorRequests = new Map<string, PendingRelayDoctorRequest>();
   private pendingRelayDoctorFixRequests = new Map<string, PendingRelayDoctorFixRequest>();
+  private pendingRelayPermissionsRequests = new Map<string, PendingRelayPermissionsRequest>();
 
   // Text encoder for signing
   private encoder = new TextEncoder();
@@ -284,6 +296,7 @@ export class GatewayClient {
     this.clearPendingRelayBootstrapRequests('Connection restarted');
     this.clearPendingRelayDoctorRequests('Connection restarted');
     this.clearPendingRelayDoctorFixRequests('Connection restarted');
+    this.clearPendingRelayPermissionsRequests('Connection restarted');
     this.logTelemetry('connect_start', {
       attemptId,
       mode: this.config?.mode ?? 'local',
@@ -373,6 +386,7 @@ export class GatewayClient {
       this.clearPendingRelayBootstrapRequests('Connection closed');
       this.clearPendingRelayDoctorRequests('Connection closed');
       this.clearPendingRelayDoctorFixRequests('Connection closed');
+      this.clearPendingRelayPermissionsRequests('Connection closed');
 
       if (this.manuallyClosed) {
         this.setState('closed');
@@ -414,6 +428,7 @@ export class GatewayClient {
     this.clearPendingRelayBootstrapRequests('Connection closed');
     this.clearPendingRelayDoctorRequests('Connection closed');
     this.clearPendingRelayDoctorFixRequests('Connection closed');
+    this.clearPendingRelayPermissionsRequests('Connection closed');
     this.connectRequestInFlight = false;
     this.connectRequestCompleted = false;
     if (this.ws) {
@@ -470,6 +485,7 @@ export class GatewayClient {
     this.clearPendingRelayBootstrapRequests('Connection restarted');
     this.clearPendingRelayDoctorRequests('Connection restarted');
     this.clearPendingRelayDoctorFixRequests('Connection restarted');
+    this.clearPendingRelayPermissionsRequests('Connection restarted');
     this.connectRequestInFlight = false;
     this.connectRequestCompleted = false;
 
@@ -1549,6 +1565,24 @@ export class GatewayClient {
       if (!pending) return;
       clearTimeout(pending.timeout);
       pending.reject(doctorFixError.error);
+      return;
+    }
+
+    const permissionsResult = parseRelayPermissionsResult(frame);
+    if (permissionsResult) {
+      const pending = this.takePendingRelayPermissionsRequest(permissionsResult.requestId);
+      if (!pending) return;
+      clearTimeout(pending.timeout);
+      pending.resolve(permissionsResult.result);
+      return;
+    }
+
+    const permissionsError = parseRelayPermissionsError(frame);
+    if (permissionsError) {
+      const pending = this.takePendingRelayPermissionsRequest(permissionsError.requestId);
+      if (!pending) return;
+      clearTimeout(pending.timeout);
+      pending.reject(permissionsError.error);
     }
   }
 
@@ -1739,6 +1773,14 @@ export class GatewayClient {
     }
   }
 
+  private clearPendingRelayPermissionsRequests(reason: string): void {
+    for (const [requestId, pending] of this.pendingRelayPermissionsRequests.entries()) {
+      clearTimeout(pending.timeout);
+      pending.reject(new RelayDoctorRequestError('relay_doctor_failed', reason));
+      this.pendingRelayPermissionsRequests.delete(requestId);
+    }
+  }
+
   private takePendingRelayBootstrapRequest(requestId?: string): PendingRelayBootstrapRequest | null {
     if (requestId) {
       const pending = this.pendingRelayBootstrapRequests.get(requestId) ?? null;
@@ -1811,6 +1853,46 @@ export class GatewayClient {
 
   private static RELAY_DOCTOR_FIX_TIMEOUT_MS = 60_000;
 
+  private static RELAY_PERMISSIONS_TIMEOUT_MS = 30_000;
+
+  public async requestPermissions(): Promise<RelayPermissionsResult> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new RelayDoctorRequestError('relay_doctor_failed', 'NOT_CONNECTED');
+    }
+    if (this.activeRoute !== 'relay') {
+      throw new RelayDoctorRequestError('relay_doctor_failed', 'NOT_RELAY');
+    }
+
+    const requestId = `req_permissions_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const startedAt = Date.now();
+
+    return new Promise<RelayPermissionsResult>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingRelayPermissionsRequests.delete(requestId);
+        reject(new RelayDoctorRequestError('relay_doctor_timeout', 'Permissions request timed out.'));
+      }, GatewayClient.RELAY_PERMISSIONS_TIMEOUT_MS);
+
+      this.pendingRelayPermissionsRequests.set(requestId, {
+        requestId,
+        startedAt,
+        timeout,
+        resolve,
+        reject,
+      });
+
+      try {
+        this.ws?.send(buildRelayPermissionsRequestFrame({ requestId }));
+      } catch (error: unknown) {
+        clearTimeout(timeout);
+        this.pendingRelayPermissionsRequests.delete(requestId);
+        reject(new RelayDoctorRequestError(
+          'relay_doctor_failed',
+          error instanceof Error ? error.message : String(error),
+        ));
+      }
+    });
+  }
+
   public async requestDoctorFix(): Promise<RelayDoctorFixResult> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new RelayDoctorRequestError('relay_doctor_fix_failed', 'NOT_CONNECTED');
@@ -1859,6 +1941,19 @@ export class GatewayClient {
     const first = this.pendingRelayDoctorFixRequests.values().next().value as PendingRelayDoctorFixRequest | undefined;
     if (!first) return null;
     this.pendingRelayDoctorFixRequests.delete(first.requestId);
+    return first;
+  }
+
+  private takePendingRelayPermissionsRequest(requestId?: string): PendingRelayPermissionsRequest | null {
+    if (requestId) {
+      const pending = this.pendingRelayPermissionsRequests.get(requestId) ?? null;
+      if (pending) this.pendingRelayPermissionsRequests.delete(requestId);
+      return pending;
+    }
+    if (this.pendingRelayPermissionsRequests.size !== 1) return null;
+    const first = this.pendingRelayPermissionsRequests.values().next().value as PendingRelayPermissionsRequest | undefined;
+    if (!first) return null;
+    this.pendingRelayPermissionsRequests.delete(first.requestId);
     return first;
   }
 
@@ -2183,6 +2278,7 @@ export class GatewayClient {
     this.clearPendingRelayBootstrapRequests(reason);
     this.clearPendingRelayDoctorRequests(reason);
     this.clearPendingRelayDoctorFixRequests(reason);
+    this.clearPendingRelayPermissionsRequests(reason);
     this.connectRequestInFlight = false;
     this.connectRequestCompleted = false;
 

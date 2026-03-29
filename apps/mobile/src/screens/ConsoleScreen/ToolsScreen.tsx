@@ -7,11 +7,12 @@ import { ToolsView, ToolsViewHandle } from '../../components/console/ToolsView';
 import { useTranslation } from 'react-i18next';
 import { HeaderActionButton, SegmentedTabs } from '../../components/ui';
 import { useAppContext } from '../../contexts/AppContext';
+import { useProPaywall } from '../../contexts/ProPaywallContext';
 import { useNativeStackModalHeader } from '../../hooks/useNativeStackModalHeader';
 import { useAppTheme } from '../../theme';
 import { useTabBarHeight } from '../../hooks/useTabBarHeight';
 import { useGatewayToolSettings } from '../ConfigScreen/hooks/useGatewayToolSettings';
-import { ToolSettingsContent } from '../ConfigScreen/GatewayToolsScreen';
+import { ToolSettingsContent, openOpenClawPermissions } from '../ConfigScreen/GatewayToolsScreen';
 import { getGatewayDisabledToolIds } from '../../utils/gateway-tool-settings';
 import type { ConsoleStackParamList } from './ConsoleTab';
 
@@ -30,6 +31,7 @@ export function ToolsScreen(): React.JSX.Element {
     () => agents.find((a) => a.id === currentAgentId)?.name ?? currentAgentId,
     [agents, currentAgentId],
   );
+  const { requirePro } = useProPaywall();
   const { theme } = useAppTheme();
   const tabBarHeight = useTabBarHeight();
   const navigation = useNavigation<ToolsNavigation>();
@@ -73,6 +75,11 @@ export function ToolsScreen(): React.JSX.Element {
     }
   }, [tab, toolSettings]);
 
+  const handleOpenPermissions = useCallback(() => {
+    if (!requirePro('configBackups')) return;
+    openOpenClawPermissions(navigation);
+  }, [navigation, requirePro]);
+
   const styles = useMemo(() => createStyles(theme.colors.background), [theme]);
   const headerRight = useMemo(
     () => (
@@ -98,6 +105,7 @@ export function ToolsScreen(): React.JSX.Element {
           toolSettings={toolSettings}
           hasActiveGateway={hasActiveGateway}
           tabBarHeight={tabBarHeight}
+          onOpenPermissions={handleOpenPermissions}
         />
       ) : (
         <ToolsView

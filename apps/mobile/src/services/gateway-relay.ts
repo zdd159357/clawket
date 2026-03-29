@@ -334,6 +334,164 @@ export function parseRelayDoctorResult(control: RelayControlFrame): { requestId?
   };
 }
 
+export type RelayPermissionsStatus =
+  | 'available'
+  | 'needs_approval'
+  | 'restricted'
+  | 'disabled'
+  | 'configuration_needed';
+
+export type RelayPermissionsSummary = {
+  status: RelayPermissionsStatus;
+  summary: string;
+  reasons: string[];
+};
+
+export type RelayPermissionsResult = {
+  configPath: string;
+  approvalsPath: string;
+  web: RelayPermissionsSummary & {
+    searchEnabled: boolean;
+    searchProvider: string;
+    searchConfigured: boolean;
+    fetchEnabled: boolean;
+    firecrawlConfigured: boolean;
+  };
+  exec: RelayPermissionsSummary & {
+    currentAgentId: string;
+    currentAgentName: string;
+    toolProfile: 'minimal' | 'coding' | 'messaging' | 'full' | 'unset';
+    execToolAvailable: boolean;
+    hostApprovalsApply: boolean;
+    implicitSandboxFallback: boolean;
+    configuredHost: 'sandbox' | 'gateway' | 'node';
+    effectiveHost: 'sandbox' | 'gateway' | 'node';
+    sandboxMode: 'off' | 'non-main' | 'all';
+    configSecurity: 'deny' | 'allowlist' | 'full';
+    configAsk: 'off' | 'on-miss' | 'always';
+    approvalsExists: boolean;
+    approvalsSecurity: 'deny' | 'allowlist' | 'full';
+    approvalsAsk: 'off' | 'on-miss' | 'always';
+    effectiveSecurity: 'deny' | 'allowlist' | 'full';
+    effectiveAsk: 'off' | 'on-miss' | 'always';
+    allowlistCount: number;
+    toolPolicyDenied: boolean;
+    safeBins: string[];
+    safeBinTrustedDirs: string[];
+    trustedDirWarnings: string[];
+  };
+  codeExecution: RelayPermissionsSummary & {
+    inheritsFromExec: true;
+  };
+};
+
+export type PendingRelayPermissionsRequest = {
+  requestId: string;
+  startedAt: number;
+  timeout: ReturnType<typeof setTimeout>;
+  resolve: (result: RelayPermissionsResult) => void;
+  reject: (error: Error) => void;
+};
+
+export function buildRelayPermissionsRequestFrame(params: {
+  requestId: string;
+}): string {
+  return `${RELAY_CONTROL_PREFIX}${JSON.stringify({
+    type: 'control',
+    event: 'permissions.request',
+    requestId: params.requestId,
+  })}`;
+}
+
+function parseRelayPermissionsSummary(
+  value: unknown,
+): RelayPermissionsSummary {
+  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    status: (typeof record.status === 'string' ? record.status : 'disabled') as RelayPermissionsStatus,
+    summary: typeof record.summary === 'string' ? record.summary : '',
+    reasons: Array.isArray(record.reasons)
+      ? record.reasons.filter((reason): reason is string => typeof reason === 'string')
+      : [],
+  };
+}
+
+export function parseRelayPermissionsResult(control: RelayControlFrame): { requestId?: string; result: RelayPermissionsResult } | null {
+  if (control.event !== 'permissions.result') return null;
+  const payload = unwrapRelayControlPayload(control.payload);
+  const requestId = trimToUndefined(payload.requestId);
+  const web = payload.web && typeof payload.web === 'object' ? payload.web as Record<string, unknown> : {};
+  const exec = payload.exec && typeof payload.exec === 'object' ? payload.exec as Record<string, unknown> : {};
+  const codeExecution = payload.codeExecution && typeof payload.codeExecution === 'object'
+    ? payload.codeExecution as Record<string, unknown>
+    : {};
+  const legacyHost = (trimToUndefined(exec.host) ?? 'sandbox') as RelayPermissionsResult['exec']['effectiveHost'];
+  const configuredHost = (trimToUndefined(exec.configuredHost) ?? legacyHost) as RelayPermissionsResult['exec']['configuredHost'];
+  const effectiveHost = (trimToUndefined(exec.effectiveHost) ?? legacyHost) as RelayPermissionsResult['exec']['effectiveHost'];
+  return {
+    requestId,
+    result: {
+      configPath: trimToUndefined(payload.configPath) ?? '',
+      approvalsPath: trimToUndefined(payload.approvalsPath) ?? '',
+      web: {
+        ...parseRelayPermissionsSummary(web),
+        searchEnabled: web.searchEnabled === true,
+        searchProvider: trimToUndefined(web.searchProvider) ?? 'auto',
+        searchConfigured: web.searchConfigured === true,
+        fetchEnabled: web.fetchEnabled !== false,
+        firecrawlConfigured: web.firecrawlConfigured === true,
+      },
+      exec: {
+        ...parseRelayPermissionsSummary(exec),
+        currentAgentId: trimToUndefined(exec.currentAgentId) ?? 'main',
+        currentAgentName: trimToUndefined(exec.currentAgentName) ?? 'main',
+        toolProfile: (trimToUndefined(exec.toolProfile) ?? 'unset') as RelayPermissionsResult['exec']['toolProfile'],
+        execToolAvailable: exec.execToolAvailable !== false,
+        hostApprovalsApply: exec.hostApprovalsApply === true,
+        implicitSandboxFallback: exec.implicitSandboxFallback === true,
+        configuredHost,
+        effectiveHost,
+        sandboxMode: (trimToUndefined(exec.sandboxMode) ?? 'off') as RelayPermissionsResult['exec']['sandboxMode'],
+        configSecurity: (trimToUndefined(exec.configSecurity) ?? 'deny') as RelayPermissionsResult['exec']['configSecurity'],
+        configAsk: (trimToUndefined(exec.configAsk) ?? 'on-miss') as RelayPermissionsResult['exec']['configAsk'],
+        approvalsExists: exec.approvalsExists === true,
+        approvalsSecurity: (trimToUndefined(exec.approvalsSecurity) ?? 'deny') as RelayPermissionsResult['exec']['approvalsSecurity'],
+        approvalsAsk: (trimToUndefined(exec.approvalsAsk) ?? 'on-miss') as RelayPermissionsResult['exec']['approvalsAsk'],
+        effectiveSecurity: (trimToUndefined(exec.effectiveSecurity) ?? 'deny') as RelayPermissionsResult['exec']['effectiveSecurity'],
+        effectiveAsk: (trimToUndefined(exec.effectiveAsk) ?? 'on-miss') as RelayPermissionsResult['exec']['effectiveAsk'],
+        allowlistCount: typeof exec.allowlistCount === 'number' ? exec.allowlistCount : 0,
+        toolPolicyDenied: exec.toolPolicyDenied === true,
+        safeBins: Array.isArray(exec.safeBins)
+          ? exec.safeBins.filter((entry): entry is string => typeof entry === 'string')
+          : [],
+        safeBinTrustedDirs: Array.isArray(exec.safeBinTrustedDirs)
+          ? exec.safeBinTrustedDirs.filter((entry): entry is string => typeof entry === 'string')
+          : [],
+        trustedDirWarnings: Array.isArray(exec.trustedDirWarnings)
+          ? exec.trustedDirWarnings.filter((entry): entry is string => typeof entry === 'string')
+          : [],
+      },
+      codeExecution: {
+        ...parseRelayPermissionsSummary(codeExecution),
+        inheritsFromExec: true,
+      },
+    },
+  };
+}
+
+export function parseRelayPermissionsError(control: RelayControlFrame): { requestId?: string; error: RelayDoctorRequestError } | null {
+  if (control.event !== 'permissions.error') return null;
+  const payload = unwrapRelayControlPayload(control.payload);
+  const requestId = trimToUndefined(payload.requestId);
+  const detailCode = trimToUndefined(payload.code);
+  const rawMessage = trimToUndefined(payload.message) ?? 'Permissions request failed.';
+  const message = detailCode ? `[${detailCode}] ${rawMessage}` : rawMessage;
+  return {
+    requestId,
+    error: new RelayDoctorRequestError('relay_doctor_failed', message, detailCode),
+  };
+}
+
 export function parseRelayDoctorError(control: RelayControlFrame): { requestId?: string; error: RelayDoctorRequestError } | null {
   if (control.event !== 'doctor.error') return null;
   const payload = unwrapRelayControlPayload(control.payload);

@@ -2,7 +2,7 @@
 
 Clawket is a mobile client for OpenClaw (iOS/Android, React Native + Expo) inside the Clawket monorepo.
 
-For OpenClaw protocol details and reference implementations, see: `../../../../openclaw`
+For OpenClaw protocol details and reference implementations, see: `../../../../openclaw` or `/Users/lucy/Desktop/op/openclaw`
 
 If the task involves Android development or building an Android release package, refer to `docs/android-build.md`.
 
@@ -33,7 +33,7 @@ You **must** read the sister repo's code (start with its `AGENTS.md` and `CLAUDE
 3. **Message protocol** — The WS frame format, control frames (`__clawket_relay_control__:` prefix), and `connect`/`challenge` handshake are defined in relay and bridge.
 4. **Relay behavior** — Offline message caching, gateway owner lease, heartbeat/alarm logic live in `clawket-relay`.
 5. **Bridge lifecycle** — Demand-driven gateway connection, lazy connect/disconnect, service install/uninstall live in `clawket-bridge`.
-6. **Gateway API** — The app calls Gateway methods (`chat.*`, `config.*`, `models.*`, `cron.*`, etc.) through the relay+bridge tunnel. Understanding what the Gateway supports requires checking OpenClaw source at `../../../../openclaw`.
+6. **Gateway API** — The app calls Gateway methods (`chat.*`, `config.*`, `models.*`, `cron.*`, etc.) through the relay+bridge tunnel. Understanding what the Gateway supports requires checking OpenClaw source at `../../../../openclaw` or `/Users/lucy/Desktop/op/openclaw`.
 
 ## How to Read Sister Repos
 
@@ -47,6 +47,13 @@ You **must** read the sister repo's code (start with its `AGENTS.md` and `CLAUDE
 
 ## Gateway Config Safety
 - Any flow that patches Gateway config must show a secondary confirmation dialog, because the change will restart Gateway and may interrupt active OpenClaw tasks.
+
+## Global Loading Overlay Rules
+- Reuse the shared global loading overlay for app-wide in-flight states that should float above the current screen without replacing its layout.
+- Preferred API: `src/contexts/GlobalLoadingOverlayContext.tsx` via `useGlobalLoadingOverlay()` and the root-rendered `GlobalLoadingOverlay`.
+- The older Gateway-named exports (`useGatewayOverlay`, `GatewayOverlayProvider`, `GatewaySwitchOverlay`) are compatibility aliases only. Do not introduce new feature work against the Gateway-specific names unless you are touching legacy code that already uses them.
+- Do not replace a whole screen with `LoadingState` when the intended UX is a transient global spinner above the existing UI. Use `LoadingState` for true full-screen loading pages only.
+- If an in-flight action can be interrupted by dismissing a modal screen or swiping down a native-stack modal, add an explicit confirmation before leaving; do not assume the global overlay itself prevents dismissal.
 
 ## Release Update Modal
 - The Chat first-screen release/update modal content lives in `src/features/app-updates/currentAnnouncement.ts`.

@@ -16,7 +16,7 @@ This repository is the Clawket monorepo.
 
 ## External Dependency
 
-OpenClaw still lives outside this repository. From the monorepo root, its expected sibling path is `../../openclaw`.
+OpenClaw still lives outside this repository. From the monorepo root, its expected sibling path is `../../openclaw` or `/Users/lucy/Desktop/op/openclaw`.
 
 ## Mechanical Merge Rule
 

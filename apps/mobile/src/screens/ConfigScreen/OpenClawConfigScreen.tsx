@@ -1,24 +1,25 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useNavigation, usePreventRemove } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   Archive,
-  CheckCircle2,
   ChevronRight,
   CircleAlert,
   Eye,
   RotateCcw,
+  Shield,
   Stethoscope,
-  TriangleAlert,
+  Wrench,
 } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
-import { createCardContentStyle, ModalSheet } from '../../components/ui';
+import { CopyableCommand } from '../../components/config/CopyableCommand';
+import { createCardContentStyle } from '../../components/ui';
 import { useAppContext } from '../../contexts/AppContext';
+import { useGatewayOverlay } from '../../contexts/GatewayOverlayContext';
 import { useProPaywall } from '../../contexts/ProPaywallContext';
 import { useNativeStackModalHeader } from '../../hooks/useNativeStackModalHeader';
 import { analyticsEvents } from '../../services/analytics/events';
-import type { RelayDoctorCheckResult, RelayDoctorResult } from '../../services/gateway-relay';
 import { StorageService } from '../../services/storage';
 import { useAppTheme } from '../../theme';
 import { FontSize, FontWeight, Radius, Space } from '../../theme/tokens';
@@ -26,6 +27,9 @@ import type { ConfigStackParamList } from './ConfigTab';
 import { useGatewayRuntimeSettings } from './hooks/useGatewayRuntimeSettings';
 
 type Navigation = NativeStackNavigationProp<ConfigStackParamList, 'OpenClawConfig'>;
+
+const UPDATE_CLAWKET_CLI_COMMAND = 'npm install -g @p697/clawket@latest';
+const RESTART_CLAWKET_CLI_COMMAND = 'clawket restart';
 
 type ActionRowProps = {
   title: string;
@@ -68,49 +72,18 @@ function ActionRow({
   );
 }
 
-function DoctorCheckRow({
-  check,
-  styles,
-}: {
-  check: RelayDoctorCheckResult;
-  styles: ReturnType<typeof createStyles>;
-}): React.JSX.Element {
-  const statusIcon = check.status === 'pass'
-    ? <CheckCircle2 size={15} strokeWidth={2.2} color="#22C55E" />
-    : check.status === 'warn'
-      ? <TriangleAlert size={15} strokeWidth={2.2} color="#F59E0B" />
-      : check.status === 'skip'
-        ? <CheckCircle2 size={15} strokeWidth={2.2} color="#94A3B8" />
-        : <CircleAlert size={15} strokeWidth={2.2} color="#EF4444" />;
-
-  return (
-    <View style={styles.doctorCheckRow}>
-      {statusIcon}
-      <View style={styles.doctorCheckText}>
-        <Text style={styles.doctorCheckName}>{check.name}</Text>
-        {check.message ? (
-          <Text style={styles.doctorCheckMessage}>{check.message}</Text>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
 export function OpenClawConfigScreen(): React.JSX.Element {
   const navigation = useNavigation<Navigation>();
   const { t } = useTranslation(['config', 'common']);
   const { theme } = useAppTheme();
   const { gateway, config: activeGatewayConfig, gatewayEpoch } = useAppContext();
+  const { showOverlay, hideOverlay } = useGatewayOverlay();
   const { requirePro } = useProPaywall();
   const styles = useMemo(() => createStyles(theme.colors), [theme.colors]);
   const [backingUpConfig, setBackingUpConfig] = useState(false);
   const [runningDoctor, setRunningDoctor] = useState(false);
-  const [doctorResult, setDoctorResult] = useState<RelayDoctorResult | null>(null);
-  const [doctorError, setDoctorError] = useState<string | null>(null);
-  const [doctorModalVisible, setDoctorModalVisible] = useState(false);
-  const [runningFix, setRunningFix] = useState(false);
-  const [fixResult, setFixResult] = useState<{ ok: boolean; raw?: string } | null>(null);
-  const [fixError, setFixError] = useState<string | null>(null);
+  const [runningAutoFix, setRunningAutoFix] = useState(false);
+  const [actionLoadingVisible, setActionLoadingVisible] = useState(false);
   const runtimeSettings = useGatewayRuntimeSettings({
     gateway,
     gatewayEpoch,
@@ -161,6 +134,11 @@ export function OpenClawConfigScreen(): React.JSX.Element {
     navigation.navigate('GatewayConfigBackups');
   }, [navigation, requirePro]);
 
+  const handlePermissionsPress = useCallback(() => {
+    if (!requirePro('configBackups')) return;
+    navigation.navigate('OpenClawPermissions');
+  }, [navigation, requirePro]);
+
   const handleRestartGatewayConfirm = useCallback(() => {
     Alert.alert(
       t('Restart Current Gateway?'),
@@ -179,61 +157,112 @@ export function OpenClawConfigScreen(): React.JSX.Element {
 
   const handleDoctorPress = useCallback(async () => {
     if (runningDoctor) return;
+    if (!requirePro('configBackups')) return;
     setRunningDoctor(true);
-    setDoctorResult(null);
-    setDoctorError(null);
-    setFixResult(null);
-    setFixError(null);
-    setDoctorModalVisible(true);
+    setActionLoadingVisible(true);
+    showOverlay(t('Running openclaw doctor...'));
+
+    const openDiagnostics = (params: ConfigStackParamList['OpenClawDiagnostics']) => {
+      hideOverlay();
+      setActionLoadingVisible(false);
+      requestAnimationFrame(() => {
+        navigation.navigate('OpenClawDiagnostics', params);
+      });
+    };
 
     try {
       const result = await gateway.requestDoctor();
-      setDoctorResult(result);
+      openDiagnostics({ mode: 'doctor', doctorResult: result });
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : '';
+      let doctorError = raw || t('Doctor command failed.');
       if (raw === 'NOT_RELAY') {
-        setDoctorError(t('Diagnostics require a relay connection. Connect via Clawket Bridge to use this feature.'));
+        doctorError = t('Diagnostics require a relay connection. Connect via Clawket Bridge to use this feature.');
       } else if (raw === 'NOT_CONNECTED') {
-        setDoctorError(t('Not connected to gateway.'));
-      } else {
-        setDoctorError(raw || t('Doctor command failed.'));
+        doctorError = t('Not connected to gateway.');
       }
+      openDiagnostics({ mode: 'doctor', doctorError });
     } finally {
+      hideOverlay();
       setRunningDoctor(false);
     }
-  }, [gateway, runningDoctor, t]);
+  }, [gateway, hideOverlay, navigation, requirePro, runningDoctor, showOverlay, t]);
 
-  const handleDoctorModalClose = useCallback(() => {
-    setDoctorModalVisible(false);
-    setFixResult(null);
-    setFixError(null);
-  }, []);
+  const handleAutoFixPress = useCallback(async () => {
+    if (runningAutoFix) return;
+    if (!requirePro('configBackups')) return;
+    setRunningAutoFix(true);
+    setActionLoadingVisible(true);
+    showOverlay(t('Running openclaw doctor --fix...'));
 
-  const handleFixPress = useCallback(async () => {
-    if (runningFix) return;
-    setRunningFix(true);
-    setFixResult(null);
-    setFixError(null);
+    const openDiagnostics = (params: ConfigStackParamList['OpenClawDiagnostics']) => {
+      hideOverlay();
+      setActionLoadingVisible(false);
+      requestAnimationFrame(() => {
+        navigation.navigate('OpenClawDiagnostics', params);
+      });
+    };
 
     try {
       const result = await gateway.requestDoctorFix();
-      setFixResult(result);
+      openDiagnostics({ mode: 'fix', fixResult: result });
     } catch (err: unknown) {
       const raw = err instanceof Error ? err.message : '';
-      setFixError(raw || t('Fix command failed.'));
+      let fixError = raw || t('Fix command failed.');
+      if (raw === 'NOT_RELAY') {
+        fixError = t('Diagnostics require a relay connection. Connect via Clawket Bridge to use this feature.');
+      } else if (raw === 'NOT_CONNECTED') {
+        fixError = t('Not connected to gateway.');
+      }
+      openDiagnostics({ mode: 'fix', fixError });
     } finally {
-      setRunningFix(false);
+      hideOverlay();
+      setRunningAutoFix(false);
     }
-  }, [gateway, runningFix, t]);
+  }, [gateway, hideOverlay, navigation, requirePro, runningAutoFix, showOverlay, t]);
+
+  const confirmAbortRunning = useCallback((onConfirm: () => void) => {
+    Alert.alert(
+      t('Confirm Exit?'),
+      t('Exit now? This will interrupt the current operation.'),
+      [
+        { text: t('common:Cancel'), style: 'cancel' },
+        {
+          text: t('common:Exit'),
+          style: 'destructive',
+          onPress: onConfirm,
+        },
+      ],
+    );
+  }, [t]);
+
+  usePreventRemove(actionLoadingVisible, ({ data }) => {
+    confirmAbortRunning(() => {
+      hideOverlay();
+      setActionLoadingVisible(false);
+      navigation.dispatch(data.action);
+    });
+  });
 
   useNativeStackModalHeader({
     navigation,
     title: t('OPENCLAW CONFIG'),
-    onClose: () => navigation.goBack(),
+    onClose: () => {
+      if (actionLoadingVisible) {
+        confirmAbortRunning(() => {
+          hideOverlay();
+          setActionLoadingVisible(false);
+          navigation.goBack();
+        });
+        return;
+      }
+      navigation.goBack();
+    },
   });
 
   const hasActiveGateway = Boolean(activeGatewayConfig?.url);
   const isRelayRoute = hasActiveGateway && gateway.getConnectionRoute() === 'relay';
+  const updateAgentPrompt = t('Please first upgrade the installed clawket client on this computer by running `npm install -g @p697/clawket@latest`, then run `clawket restart` after the installation completes.');
 
   return (
     <ScrollView contentContainerStyle={createCardContentStyle()}>
@@ -264,7 +293,7 @@ export function OpenClawConfigScreen(): React.JSX.Element {
           chevronColor={theme.colors.textSubtle}
           icon={(
             <View style={[styles.rowIconBadge, { backgroundColor: '#FFF1E5' }]}>
-              <Archive size={17} strokeWidth={2.2} color="#D96C1F" fill="#D96C1F" />
+              <Archive size={17} strokeWidth={2.2} color="#D96C1F" />
             </View>
           )}
         />
@@ -311,6 +340,9 @@ export function OpenClawConfigScreen(): React.JSX.Element {
                 <Text style={styles.rowTitle}>
                   {runtimeSettings.restartingGateway ? t('common:Loading...') : t('Restart Current Gateway')}
                 </Text>
+                <Text style={styles.rowSubtitle}>
+                  {t('Restart after changing config or making certain updates to ensure they take effect')}
+                </Text>
               </View>
             </View>
           </Pressable>
@@ -318,14 +350,29 @@ export function OpenClawConfigScreen(): React.JSX.Element {
       ) : null}
 
       <View style={styles.secondaryCard}>
+        <ActionRow
+          title={t('OpenClaw Permission Management')}
+          subtitle={t('View and adjust common OpenClaw permissions')}
+          onPress={handlePermissionsPress}
+          styles={styles}
+          chevronColor={theme.colors.textSubtle}
+          icon={(
+            <View style={[styles.rowIconBadge, { backgroundColor: '#E8F7F0' }]}>
+              <Shield size={17} strokeWidth={2.2} color="#18794E" />
+            </View>
+          )}
+        />
+
+        <View style={styles.divider} />
+
         <Pressable
           onPress={() => { void handleDoctorPress(); }}
           style={({ pressed }) => [
             styles.row,
             pressed && !runningDoctor && styles.rowPressed,
-            (runningDoctor || !hasActiveGateway) && styles.rowDisabled,
+            (runningDoctor || runningAutoFix || !hasActiveGateway) && styles.rowDisabled,
           ]}
-          disabled={runningDoctor || !hasActiveGateway}
+          disabled={runningDoctor || runningAutoFix || !hasActiveGateway}
         >
           <View style={styles.rowLead}>
             <View style={[styles.rowIconBadge, { backgroundColor: '#EDE9FE' }]}>
@@ -333,7 +380,7 @@ export function OpenClawConfigScreen(): React.JSX.Element {
             </View>
             <View style={styles.rowText}>
               <Text style={styles.rowTitle}>
-                {runningDoctor ? t('Running diagnostics...') : t('Diagnose')}
+                {runningDoctor ? t('Running diagnostics...') : t('Status Diagnostics')}
               </Text>
               <Text style={styles.rowSubtitle}>
                 {isRelayRoute
@@ -344,102 +391,60 @@ export function OpenClawConfigScreen(): React.JSX.Element {
           </View>
           <ChevronRight size={16} color={theme.colors.textSubtle} strokeWidth={2} />
         </Pressable>
+
+        <View style={styles.divider} />
+
+        <Pressable
+          onPress={() => { void handleAutoFixPress(); }}
+          style={({ pressed }) => [
+            styles.row,
+            pressed && !runningAutoFix && styles.rowPressed,
+            (runningDoctor || runningAutoFix || !hasActiveGateway) && styles.rowDisabled,
+            ]}
+          disabled={runningDoctor || runningAutoFix || !hasActiveGateway}
+        >
+          <View style={styles.rowLead}>
+            <View style={[styles.rowIconBadge, { backgroundColor: '#E9F8EE' }]}>
+              <Wrench size={17} strokeWidth={2.25} color="#248A4D" />
+            </View>
+            <View style={styles.rowText}>
+              <Text style={styles.rowTitle}>
+                {runningAutoFix ? t('Running fix...') : t('Auto Fix')}
+              </Text>
+              <Text style={styles.rowSubtitle}>{t('Run openclaw doctor --fix')}</Text>
+            </View>
+          </View>
+          <ChevronRight size={16} color={theme.colors.textSubtle} strokeWidth={2} />
+        </Pressable>
       </View>
 
-      <ModalSheet
-        visible={doctorModalVisible}
-        onClose={handleDoctorModalClose}
-        title={t('Diagnostics')}
-      >
-        <ScrollView style={styles.doctorScroll} contentContainerStyle={styles.doctorContent}>
-          {runningDoctor ? (
-            <View style={styles.doctorLoading}>
-              <ActivityIndicator size="small" color={theme.colors.primary} />
-              <Text style={styles.doctorLoadingText}>{t('Running openclaw doctor...')}</Text>
-            </View>
-          ) : doctorError ? (
-            <View style={styles.doctorErrorContainer}>
-              <CircleAlert size={20} strokeWidth={2} color={theme.colors.error} />
-              <Text style={styles.doctorErrorText}>{doctorError}</Text>
-            </View>
-          ) : doctorResult ? (
-            <>
-              <View style={styles.doctorSummaryRow}>
-                {doctorResult.ok
-                  ? <CheckCircle2 size={20} strokeWidth={2.2} color="#22C55E" />
-                  : <CircleAlert size={20} strokeWidth={2.2} color="#EF4444" />}
-                <Text style={[
-                  styles.doctorSummaryText,
-                  { color: doctorResult.ok ? '#22C55E' : theme.colors.error },
-                ]}>
-                  {doctorResult.ok ? t('All checks passed') : t('Issues detected')}
-                </Text>
-              </View>
-              {doctorResult.summary ? (
-                <Text style={styles.doctorHint}>{doctorResult.summary}</Text>
-              ) : null}
-              {doctorResult.checks.length > 0 ? (
-                <View style={styles.doctorCheckList}>
-                  {doctorResult.checks.map((check, index) => (
-                    <DoctorCheckRow key={`${check.name}-${index}`} check={check} styles={styles} />
-                  ))}
-                </View>
-              ) : null}
-              {doctorResult.raw ? (
-                <View style={styles.doctorRawContainer}>
-                  <Text style={styles.doctorRawText}>{doctorResult.raw}</Text>
-                </View>
-              ) : null}
-              {fixError ? (
-                <View style={styles.doctorErrorContainer}>
-                  <CircleAlert size={20} strokeWidth={2} color={theme.colors.error} />
-                  <Text style={styles.doctorErrorText}>{fixError}</Text>
-                </View>
-              ) : null}
-              {fixResult ? (
-                <>
-                  <View style={styles.doctorSummaryRow}>
-                    {fixResult.ok
-                      ? <CheckCircle2 size={20} strokeWidth={2.2} color="#22C55E" />
-                      : <TriangleAlert size={20} strokeWidth={2.2} color="#F59E0B" />}
-                    <Text style={[
-                      styles.doctorSummaryText,
-                      { color: fixResult.ok ? '#22C55E' : '#F59E0B' },
-                    ]}>
-                      {fixResult.ok ? t('Fix completed successfully') : t('Fix completed with issues')}
-                    </Text>
-                  </View>
-                  {fixResult.raw ? (
-                    <View style={styles.doctorRawContainer}>
-                      <Text style={styles.doctorRawText}>{fixResult.raw}</Text>
-                    </View>
-                  ) : null}
-                </>
-              ) : null}
-            </>
-          ) : null}
-        </ScrollView>
-        {doctorResult && !runningDoctor && !fixResult ? (
-          <View style={styles.fixButtonContainer}>
-            <Pressable
-              style={({ pressed }) => [
-                styles.fixButton,
-                pressed && styles.fixButtonPressed,
-                runningFix && styles.rowDisabled,
-              ]}
-              onPress={handleFixPress}
-              disabled={runningFix}
-            >
-              {runningFix ? (
-                <ActivityIndicator size="small" color={theme.colors.primaryText} />
-              ) : null}
-              <Text style={styles.fixButtonText}>
-                {runningFix ? t('Running fix...') : t('Attempt Fix')}
-              </Text>
-            </Pressable>
+      <View style={styles.secondaryCard}>
+        <View style={styles.noticeCard}>
+          <View style={styles.noticeHeader}>
+            <CircleAlert size={16} strokeWidth={2} color={theme.colors.primary} />
+            <Text style={styles.noticeTitle}>{t('Keep Clawket CLI up to date')}</Text>
           </View>
-        ) : null}
-      </ModalSheet>
+          <Text style={styles.noticeBody}>
+            {t('When using advanced features, make sure your Clawket CLI is on the latest version.')}
+          </Text>
+          <Text style={styles.noticeBody}>
+            {t('If an advanced feature fails, try updating the package first. You can copy the command below and ask Agent to run it, or run it manually yourself.')}
+          </Text>
+          <Text style={styles.noticeLabel}>{t('Upgrade command')}</Text>
+          <CopyableCommand command={UPDATE_CLAWKET_CLI_COMMAND} />
+          <Text style={styles.noticeBody}>
+            {t('After the update finishes, please run `clawket restart` as well to ensure the new version takes effect.')}
+          </Text>
+          <Text style={styles.noticeLabel}>{t('Restart command')}</Text>
+          <CopyableCommand command={RESTART_CLAWKET_CLI_COMMAND} />
+          <Text style={styles.noticeBody}>
+            {t('If you want Agent to handle the whole process, copy the prompt below and send it directly.')}
+          </Text>
+          <Text style={styles.noticeLabel}>{t('Prompt for Agent')}</Text>
+          <CopyableCommand command={updateAgentPrompt} multiline />
+        </View>
+      </View>
+
     </ScrollView>
   );
 }
@@ -452,6 +457,7 @@ function createStyles(colors: ReturnType<typeof useAppTheme>['theme']['colors'])
       borderColor: colors.border,
       backgroundColor: colors.surface,
       overflow: 'hidden',
+      marginTop: Space.xs,
     },
     secondaryCard: {
       marginTop: Space.lg,
@@ -511,106 +517,33 @@ function createStyles(colors: ReturnType<typeof useAppTheme>['theme']['colors'])
       backgroundColor: colors.borderStrong,
       marginLeft: Space.lg,
     },
-    doctorScroll: {
-      maxHeight: 400,
-    },
-    doctorContent: {
+    noticeCard: {
       paddingHorizontal: Space.lg,
-      paddingBottom: Space.lg,
-      gap: Space.md,
-    },
-    doctorLoading: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: Space.md,
       paddingVertical: Space.lg,
-      justifyContent: 'center',
+      gap: Space.sm,
+      backgroundColor: colors.surface,
     },
-    doctorLoadingText: {
-      color: colors.textMuted,
-      fontSize: FontSize.base,
-    },
-    doctorErrorContainer: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: Space.md,
-      paddingVertical: Space.sm,
-    },
-    doctorErrorText: {
-      color: colors.error,
-      fontSize: FontSize.base,
-      flex: 1,
-      lineHeight: 22,
-    },
-    doctorSummaryRow: {
+    noticeHeader: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: Space.sm,
     },
-    doctorSummaryText: {
+    noticeTitle: {
+      flex: 1,
+      color: colors.text,
       fontSize: FontSize.base,
       fontWeight: FontWeight.semibold,
     },
-    doctorHint: {
+    noticeBody: {
       color: colors.textSubtle,
       fontSize: FontSize.sm,
-      lineHeight: 18,
+      lineHeight: 20,
     },
-    doctorCheckList: {
-      gap: Space.sm,
-    },
-    doctorCheckRow: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: Space.sm,
-      paddingVertical: 2,
-    },
-    doctorCheckText: {
-      flex: 1,
-    },
-    doctorCheckName: {
+    noticeLabel: {
       color: colors.text,
       fontSize: FontSize.sm,
       fontWeight: FontWeight.medium,
-    },
-    doctorCheckMessage: {
-      color: colors.textSubtle,
-      fontSize: FontSize.xs,
-      marginTop: 1,
-      lineHeight: 16,
-    },
-    doctorRawContainer: {
-      backgroundColor: colors.surfaceMuted,
-      borderRadius: Radius.sm,
-      padding: Space.md,
-    },
-    doctorRawText: {
-      color: colors.text,
-      fontSize: FontSize.xs,
-      fontFamily: 'monospace',
-      lineHeight: 18,
-    },
-    fixButtonContainer: {
-      paddingHorizontal: Space.lg,
-      paddingTop: Space.sm,
-      paddingBottom: Space.lg,
-    },
-    fixButton: {
-      backgroundColor: colors.primary,
-      borderRadius: Radius.md,
-      paddingVertical: 11,
-      alignItems: 'center' as const,
-      justifyContent: 'center' as const,
-      flexDirection: 'row' as const,
-      gap: Space.sm,
-    },
-    fixButtonPressed: {
-      opacity: 0.88,
-    },
-    fixButtonText: {
-      color: colors.primaryText,
-      fontSize: FontSize.base,
-      fontWeight: FontWeight.semibold,
+      marginTop: 2,
     },
   });
 }

@@ -9,8 +9,11 @@ import {
   getOpenClawMediaDir,
   getOpenClawStateDir,
   issueOpenClawBootstrapToken,
+  readOpenClawPermissions,
   readOpenClawInfo,
   restartOpenClawGateway,
+  runOpenClawDoctor,
+  runOpenClawDoctorFix,
   resolveGatewayAuth,
 } from './openclaw.js';
 
@@ -392,6 +395,461 @@ describe('openclaw auth resolution', () => {
       result: 'started',
       message: 'Gateway started.',
       warnings: [],
+    });
+  });
+
+  it('parses doctor json output even when the command exits non-zero', async () => {
+    fsMock.existsSync.mockImplementation((path) => path === '/Users/tester/.openclaw/openclaw.json');
+    childProcessMock.execFile.mockImplementation((_command, args, _options, callback) => {
+      const joined = (args as string[]).join(' ');
+      if (joined === 'doctor --json') {
+        const error = new Error('exit 1') as Error & { code?: number };
+        error.code = 1;
+        callback(error, JSON.stringify({
+          ok: false,
+          summary: 'Issues found: 1',
+          checks: [
+            { name: 'Gateway config', status: 'fail', message: 'Missing auth token' },
+          ],
+        }), '');
+        return;
+      }
+      callback(new Error(`Unexpected command: ${joined}`), '', '');
+    });
+
+    await expect(runOpenClawDoctor()).resolves.toEqual({
+      ok: false,
+      summary: 'Issues found: 1',
+      checks: [
+        { name: 'Gateway config', status: 'fail', message: 'Missing auth token' },
+      ],
+    });
+  });
+
+  it('falls back to plain doctor output when json mode is unsupported', async () => {
+    fsMock.existsSync.mockImplementation((path) => path === '/Users/tester/.openclaw/openclaw.json');
+    childProcessMock.execFile.mockImplementation((_command, args, _options, callback) => {
+      const joined = (args as string[]).join(' ');
+      if (joined === 'doctor --json') {
+        const error = new Error('exit 1') as Error & { code?: number };
+        error.code = 1;
+        callback(error, '', 'unknown option --json');
+        return;
+      }
+      if (joined === 'doctor') {
+        const error = new Error('exit 1') as Error & { code?: number };
+        error.code = 1;
+        callback(error, '\u001b[31mIssues found: 1\u001b[39m\nRun openclaw doctor --fix\n', '');
+        return;
+      }
+      callback(new Error(`Unexpected command: ${joined}`), '', '');
+    });
+
+    await expect(runOpenClawDoctor()).resolves.toEqual({
+      ok: false,
+      summary: '',
+      checks: [],
+      raw: 'Issues found: 1\nRun openclaw doctor --fix',
+    });
+  });
+
+  it('includes stderr warnings in plain doctor fallback output', async () => {
+    fsMock.existsSync.mockImplementation((path) => path === '/Users/tester/.openclaw/openclaw.json');
+    childProcessMock.execFile.mockImplementation((_command, args, _options, callback) => {
+      const joined = (args as string[]).join(' ');
+      if (joined === 'doctor --json') {
+        const error = new Error('exit 1') as Error & { code?: number };
+        error.code = 1;
+        callback(error, '', 'error: unknown option --json');
+        return;
+      }
+      if (joined === 'doctor') {
+        callback(
+          null,
+          'Doctor warnings\nGateway needs restart\n',
+          '[plugins] plugin warning\n',
+        );
+        return;
+      }
+      callback(new Error(`Unexpected command: ${joined}`), '', '');
+    });
+
+    await expect(runOpenClawDoctor()).resolves.toEqual({
+      ok: true,
+      summary: '',
+      checks: [],
+      raw: 'Doctor warnings\nGateway needs restart\n[plugins] plugin warning',
+    });
+  });
+
+  it('returns doctor --fix output even when the command exits non-zero', async () => {
+    fsMock.existsSync.mockImplementation((path) => path === '/Users/tester/.openclaw/openclaw.json');
+    childProcessMock.execFile.mockImplementation((_command, args, _options, callback) => {
+      const joined = (args as string[]).join(' ');
+      if (joined === 'doctor --fix') {
+        const error = new Error('exit 1') as Error & { code?: number };
+        error.code = 1;
+        callback(error, '\u001b[33mRestart required\u001b[39m\nFixed 2 issues\n', '');
+        return;
+      }
+      callback(new Error(`Unexpected command: ${joined}`), '', '');
+    });
+
+    await expect(runOpenClawDoctorFix()).resolves.toEqual({
+      ok: false,
+      summary: '',
+      raw: 'Restart required\nFixed 2 issues',
+    });
+  });
+
+  it('includes stderr output in doctor --fix results', async () => {
+    fsMock.existsSync.mockImplementation((path) => path === '/Users/tester/.openclaw/openclaw.json');
+    childProcessMock.execFile.mockImplementation((_command, args, _options, callback) => {
+      const joined = (args as string[]).join(' ');
+      if (joined === 'doctor --fix') {
+        callback(null, 'Fixed 2 issues\n', '[plugins] warning\n');
+        return;
+      }
+      callback(new Error(`Unexpected command: ${joined}`), '', '');
+    });
+
+    await expect(runOpenClawDoctorFix()).resolves.toEqual({
+      ok: true,
+      summary: '',
+      raw: 'Fixed 2 issues\n[plugins] warning',
+    });
+  });
+
+  it('reads exec approvals from OPENCLAW_HOME instead of the bridge state dir', async () => {
+    vi.stubEnv('OPENCLAW_HOME', '/srv/openclaw-home');
+    vi.stubEnv('OPENCLAW_STATE_DIR', '/srv/openclaw-state');
+    fsMock.existsSync.mockImplementation((path) => path === '/srv/openclaw-state/openclaw.json');
+    fsPromisesMock.readFile.mockImplementation(async (path) => {
+      const target = String(path);
+      if (target === '/srv/openclaw-state/openclaw.json') {
+        return JSON.stringify({
+          tools: {
+            exec: {
+              host: 'gateway',
+              security: 'full',
+              ask: 'off',
+            },
+          },
+        });
+      }
+      if (target === '/srv/openclaw-home/.openclaw/exec-approvals.json') {
+        return JSON.stringify({
+          version: 1,
+          defaults: {
+            security: 'allowlist',
+            ask: 'always',
+          },
+          agents: {
+            main: {
+              allowlist: [{ pattern: '/usr/bin/git' }],
+            },
+          },
+        });
+      }
+      throw new Error(`ENOENT: ${target}`);
+    });
+
+    await expect(readOpenClawPermissions()).resolves.toMatchObject({
+      configPath: '/srv/openclaw-state/openclaw.json',
+      approvalsPath: '/srv/openclaw-home/.openclaw/exec-approvals.json',
+      exec: {
+        approvalsExists: true,
+        approvalsSecurity: 'allowlist',
+        approvalsAsk: 'always',
+        effectiveSecurity: 'allowlist',
+        effectiveAsk: 'always',
+        allowlistCount: 1,
+      },
+    });
+  });
+
+  it('counts legacy default agent allowlist entries in exec approvals', async () => {
+    vi.stubEnv('HOME', '/Users/tester');
+    fsMock.existsSync.mockImplementation((path) => path === '/Users/tester/.openclaw/openclaw.json');
+    fsPromisesMock.readFile.mockImplementation(async (path) => {
+      const target = String(path);
+      if (target === '/Users/tester/.openclaw/openclaw.json') {
+        return JSON.stringify({
+          tools: {
+            exec: {
+              host: 'gateway',
+              security: 'allowlist',
+              ask: 'off',
+            },
+          },
+        });
+      }
+      if (target === '/Users/tester/.openclaw/exec-approvals.json') {
+        return JSON.stringify({
+          version: 1,
+          agents: {
+            default: {
+              allowlist: [
+                { pattern: '/usr/bin/python3' },
+                { pattern: '/usr/bin/python3' },
+              ],
+            },
+          },
+        });
+      }
+      throw new Error(`ENOENT: ${target}`);
+    });
+
+    await expect(readOpenClawPermissions()).resolves.toMatchObject({
+      approvalsPath: '/Users/tester/.openclaw/exec-approvals.json',
+      exec: {
+        approvalsExists: true,
+        allowlistCount: 1,
+        status: 'restricted',
+      },
+    });
+  });
+
+  it('treats config env keys as valid web search credentials', async () => {
+    vi.stubEnv('HOME', '/Users/tester');
+    fsMock.existsSync.mockImplementation((path) => path === '/Users/tester/.openclaw/openclaw.json');
+    fsPromisesMock.readFile.mockImplementation(async (path) => {
+      const target = String(path);
+      if (target === '/Users/tester/.openclaw/openclaw.json') {
+        return JSON.stringify({
+          env: {
+            OPENROUTER_API_KEY: 'sk-or-v1-test-key',
+          },
+          tools: {
+            web: {
+              search: {
+                enabled: true,
+              },
+              fetch: {
+                enabled: true,
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`ENOENT: ${target}`);
+    });
+
+    await expect(readOpenClawPermissions()).resolves.toMatchObject({
+      web: {
+        status: 'available',
+        searchConfigured: true,
+        searchProvider: 'auto',
+      },
+    });
+  });
+
+  it('explains when exec approvals are stricter than tools.exec settings', async () => {
+    vi.stubEnv('HOME', '/Users/tester');
+    fsMock.existsSync.mockImplementation((path) => path === '/Users/tester/.openclaw/openclaw.json');
+    fsPromisesMock.readFile.mockImplementation(async (path) => {
+      const target = String(path);
+      if (target === '/Users/tester/.openclaw/openclaw.json') {
+        return JSON.stringify({
+          tools: {
+            exec: {
+              host: 'gateway',
+              security: 'full',
+              ask: 'on-miss',
+            },
+          },
+        });
+      }
+      if (target === '/Users/tester/.openclaw/exec-approvals.json') {
+        return JSON.stringify({
+          version: 1,
+          defaults: {
+            security: 'allowlist',
+            ask: 'always',
+          },
+          agents: {
+            main: {
+              security: 'allowlist',
+              ask: 'always',
+              allowlist: [],
+            },
+          },
+        });
+      }
+      throw new Error(`ENOENT: ${target}`);
+    });
+
+    await expect(readOpenClawPermissions()).resolves.toMatchObject({
+      exec: {
+        status: 'needs_approval',
+        summary: 'Commands can run, but exec approvals currently require confirmation.',
+        reasons: expect.arrayContaining([
+          'exec-approvals.json is stricter than tools.exec.security (full -> allowlist).',
+          'exec-approvals.json is stricter than tools.exec.ask (on-miss -> always).',
+        ]),
+      },
+      codeExecution: {
+        status: 'needs_approval',
+        summary: 'Running scripts or code inherits the current exec approval requirement.',
+      },
+    });
+  });
+
+  it('does not apply host approval rules when exec runs in sandbox mode', async () => {
+    vi.stubEnv('HOME', '/Users/tester');
+    fsMock.existsSync.mockImplementation((path) => path === '/Users/tester/.openclaw/openclaw.json');
+    fsPromisesMock.readFile.mockImplementation(async (path) => {
+      const target = String(path);
+      if (target === '/Users/tester/.openclaw/openclaw.json') {
+        return JSON.stringify({
+          tools: {
+            exec: {
+              security: 'full',
+              ask: 'on-miss',
+            },
+          },
+        });
+      }
+      if (target === '/Users/tester/.openclaw/exec-approvals.json') {
+        return JSON.stringify({
+          version: 1,
+          defaults: {
+            security: 'allowlist',
+            ask: 'always',
+          },
+          agents: {
+            main: {
+              security: 'allowlist',
+              ask: 'always',
+            },
+          },
+        });
+      }
+      throw new Error(`ENOENT: ${target}`);
+    });
+
+    await expect(readOpenClawPermissions()).resolves.toMatchObject({
+      exec: {
+        currentAgentId: 'main',
+        toolProfile: 'unset',
+        execToolAvailable: true,
+        hostApprovalsApply: false,
+        implicitSandboxFallback: true,
+        configuredHost: 'sandbox',
+        effectiveHost: 'gateway',
+        sandboxMode: 'off',
+        status: 'available',
+        summary: 'Commands currently run directly on this OpenClaw machine.',
+        effectiveSecurity: 'full',
+        effectiveAsk: 'off',
+        reasons: expect.arrayContaining([
+          'Sandbox mode is off, so commands are not running in an isolated sandbox.',
+          'OpenClaw is currently falling back to direct host execution on this machine.',
+        ]),
+      },
+      codeExecution: {
+        status: 'available',
+        summary: 'Scripts follow the same direct command path as command execution on this machine.',
+      },
+    });
+  });
+
+  it('uses the main agent tool profile when that overrides the global profile', async () => {
+    vi.stubEnv('HOME', '/Users/tester');
+    fsMock.existsSync.mockImplementation((path) => path === '/Users/tester/.openclaw/openclaw.json');
+    fsPromisesMock.readFile.mockImplementation(async (path) => {
+      const target = String(path);
+      if (target === '/Users/tester/.openclaw/openclaw.json') {
+        return JSON.stringify({
+          agents: {
+            list: [
+              {
+                id: 'main',
+                default: true,
+                name: 'Lucy',
+                tools: {
+                  profile: 'full',
+                },
+              },
+            ],
+          },
+          tools: {
+            profile: 'messaging',
+            exec: {
+              security: 'deny',
+              ask: 'always',
+            },
+          },
+        });
+      }
+      throw new Error(`ENOENT: ${target}`);
+    });
+
+    await expect(readOpenClawPermissions()).resolves.toMatchObject({
+      exec: {
+        currentAgentId: 'main',
+        currentAgentName: 'Lucy',
+        toolProfile: 'full',
+        execToolAvailable: true,
+        implicitSandboxFallback: true,
+        status: 'available',
+        summary: 'Commands currently run directly on this OpenClaw machine.',
+      },
+      codeExecution: {
+        status: 'available',
+        summary: 'Scripts follow the same direct command path as command execution on this machine.',
+      },
+    });
+  });
+
+  it('reports sandbox as the effective host when sandbox mode is enabled for the main agent', async () => {
+    vi.stubEnv('HOME', '/Users/tester');
+    fsMock.existsSync.mockImplementation((path) => path === '/Users/tester/.openclaw/openclaw.json');
+    fsPromisesMock.readFile.mockImplementation(async (path) => {
+      const target = String(path);
+      if (target === '/Users/tester/.openclaw/openclaw.json') {
+        return JSON.stringify({
+          agents: {
+            defaults: {
+              sandbox: {
+                mode: 'all',
+              },
+            },
+          },
+          tools: {
+            exec: {
+              security: 'full',
+              ask: 'on-miss',
+            },
+          },
+        });
+      }
+      if (target === '/Users/tester/.openclaw/exec-approvals.json') {
+        return JSON.stringify({
+          version: 1,
+          defaults: {
+            security: 'allowlist',
+            ask: 'always',
+          },
+        });
+      }
+      throw new Error(`ENOENT: ${target}`);
+    });
+
+    await expect(readOpenClawPermissions()).resolves.toMatchObject({
+      exec: {
+        configuredHost: 'sandbox',
+        effectiveHost: 'sandbox',
+        sandboxMode: 'all',
+        status: 'available',
+        summary: 'Commands run inside OpenClaw\'s sandbox.',
+        effectiveSecurity: 'full',
+        effectiveAsk: 'off',
+      },
+      codeExecution: {
+        status: 'available',
+        summary: 'Code runs inside OpenClaw\'s sandbox.',
+      },
     });
   });
 });

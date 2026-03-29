@@ -11,6 +11,9 @@ import { GatewayConfigViewerScreen } from './GatewayConfigViewerScreen';
 import { GatewayConfigBackupsScreen } from './GatewayConfigBackupsScreen';
 import { ReleaseNotesHistoryScreen } from './ReleaseNotesHistoryScreen';
 import { OpenClawConfigScreen } from './OpenClawConfigScreen';
+import { OpenClawDiagnosticsScreen } from './OpenClawDiagnosticsScreen';
+import { OpenClawPermissionsScreen } from './OpenClawPermissionsScreen';
+import type { RelayDoctorResult } from '../../services/gateway-relay';
 
 export type ConfigStackParamList = {
   ConfigHome: {
@@ -22,6 +25,17 @@ export type ConfigStackParamList = {
   ReleaseNotesHistory: undefined;
   OpenClawReleases: undefined;
   OpenClawConfig: undefined;
+  OpenClawDiagnostics: {
+    mode?: 'doctor' | 'fix';
+    doctorResult?: RelayDoctorResult;
+    doctorError?: string;
+    fixResult?: {
+      ok: boolean;
+      raw?: string;
+    };
+    fixError?: string;
+  };
+  OpenClawPermissions: undefined;
   GatewayConfigViewer: undefined;
   GatewayConfigBackups: undefined;
 };
@@ -78,6 +92,8 @@ export function ConfigTab(): React.JSX.Element {
       <ConfigStack.Screen name="ReleaseNotesHistory" component={ReleaseNotesHistoryScreen} options={modalScreenOptions} />
       <ConfigStack.Screen name="OpenClawReleases" component={OpenClawReleasesScreen} />
       <ConfigStack.Screen name="OpenClawConfig" component={OpenClawConfigScreen} options={modalScreenOptions} />
+      <ConfigStack.Screen name="OpenClawDiagnostics" component={OpenClawDiagnosticsScreen} options={modalScreenOptions} />
+      <ConfigStack.Screen name="OpenClawPermissions" component={OpenClawPermissionsScreen} options={modalScreenOptions} />
       <ConfigStack.Screen name="GatewayConfigViewer" component={GatewayConfigViewerScreen} options={modalScreenOptions} />
       <ConfigStack.Screen name="GatewayConfigBackups" component={GatewayConfigBackupsScreen} options={modalScreenOptions} />
     </ConfigStack.Navigator>

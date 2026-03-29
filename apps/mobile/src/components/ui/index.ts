@@ -9,6 +9,7 @@ export { Card } from './Card';
 export { SegmentedTabs } from './SegmentedTabs';
 export type { SegmentedTabItem } from './SegmentedTabs';
 export { ThemedSwitch } from './ThemedSwitch';
+export { GlobalLoadingOverlay } from './GlobalLoadingOverlay';
 export { GatewaySwitchOverlay } from './GatewaySwitchOverlay';
 export { ModalSheet } from './ModalSheet';
 export { ModalScreenLayout } from './ModalScreenLayout';

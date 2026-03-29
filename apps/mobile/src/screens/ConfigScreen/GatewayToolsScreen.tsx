@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { useNavigation } from '@react-navigation/native';
+import { CommonActions, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -9,9 +9,11 @@ import {
   Text,
   View,
 } from 'react-native';
+import { ChevronRight, Shield } from 'lucide-react-native';
 import { useTranslation } from 'react-i18next';
 import { useTabBarHeight } from '../../hooks/useTabBarHeight';
 import { useAppContext } from '../../contexts/AppContext';
+import { useProPaywall } from '../../contexts/ProPaywallContext';
 import { ScreenHeader, ThemedSwitch } from '../../components/ui';
 import { useAppTheme, AppTheme } from '../../theme';
 import {
@@ -21,11 +23,26 @@ import {
   Shadow,
   Space,
 } from '../../theme/tokens';
-import type { ExecAsk, ExecSecurity } from '../../utils/gateway-tool-settings';
 import type { ConsoleStackParamList } from '../ConsoleScreen/ConsoleTab';
 import { useGatewayToolSettings } from './hooks/useGatewayToolSettings';
 
 type Colors = AppTheme['colors'];
+
+export function openOpenClawPermissions(navigation: {
+  getState?: () => { routeNames?: string[] };
+  getParent?: () => any;
+  dispatch: (...args: any[]) => void;
+}): void {
+  let current: any = navigation;
+  while (current) {
+    const state = current.getState?.();
+    if (state?.routeNames?.includes('OpenClawPermissions')) {
+      current.dispatch(CommonActions.navigate({ name: 'OpenClawPermissions' }));
+      return;
+    }
+    current = current.getParent?.();
+  }
+}
 
 /**
  * Standalone scrollable content for tool settings.
@@ -37,27 +54,17 @@ export function ToolSettingsContent({
   toolSettings,
   hasActiveGateway,
   tabBarHeight,
+  onOpenPermissions,
 }: {
   colors: Colors;
   toolSettings: ReturnType<typeof useGatewayToolSettings>;
   hasActiveGateway: boolean;
   tabBarHeight: number;
+  onOpenPermissions: () => void;
 }): React.JSX.Element {
   const { t } = useTranslation('console');
   const styles = useMemo(() => createStyles(colors), [colors]);
   const disabled = !hasActiveGateway || toolSettings.loadingToolSettings;
-
-  const execSecurityOptions = useMemo<{ key: ExecSecurity; label: string }[]>(() => [
-    { key: 'deny', label: t('Deny') },
-    { key: 'allowlist', label: t('Allowlist') },
-    { key: 'full', label: t('Full') },
-  ], [t]);
-
-  const execAskOptions = useMemo<{ key: ExecAsk; label: string }[]>(() => [
-    { key: 'always', label: t('Every Command') },
-    { key: 'on-miss', label: t('Unknown Only') },
-    { key: 'off', label: t('Never') },
-  ], [t]);
 
   return (
     <ScrollView
@@ -92,36 +99,6 @@ export function ToolSettingsContent({
             onValueChange={toolSettings.setWebFetchEnabled}
             trackColor={{ false: colors.borderStrong, true: colors.primarySoft }}
             thumbColor={toolSettings.webFetchEnabled ? colors.primary : colors.surfaceMuted}
-            disabled={disabled}
-          />
-        </View>
-      </View>
-
-      {/* Exec Approval */}
-      <View style={[styles.card, styles.cardGap]}>
-        <View style={styles.row}>
-          <Text style={styles.rowLabel}>{t('Exec Approval')}</Text>
-          <Text style={styles.rowMeta}>{t('Ask for your approval before the agent runs a command')}</Text>
-          <ChipRow
-            options={execAskOptions}
-            selected={toolSettings.execAsk}
-            onSelect={toolSettings.setExecAsk}
-            colors={colors}
-            disabled={disabled}
-          />
-        </View>
-      </View>
-
-      {/* Code Execution */}
-      <View style={[styles.card, styles.cardGap]}>
-        <View style={styles.row}>
-          <Text style={styles.rowLabel}>{t('Code Execution')}</Text>
-          <Text style={styles.rowMeta}>{t('Security level for code execution')}</Text>
-          <ChipRow
-            options={execSecurityOptions}
-            selected={toolSettings.execSecurity}
-            onSelect={toolSettings.setExecSecurity}
-            colors={colors}
             disabled={disabled}
           />
         </View>
@@ -172,45 +149,30 @@ export function ToolSettingsContent({
         </View>
       </View>
 
+      <Pressable
+        onPress={onOpenPermissions}
+        style={({ pressed }) => [
+          styles.rowCard,
+          styles.cardGap,
+          pressed && styles.rowPressed,
+        ]}
+      >
+        <View style={styles.rowLead}>
+          <View style={[styles.rowIconBadge, { backgroundColor: '#E8F7F0' }]}>
+            <Shield size={17} strokeWidth={2.2} color="#18794E" />
+          </View>
+          <View style={styles.rowText}>
+            <Text style={styles.rowTitle}>{t('OpenClaw Permission Management')}</Text>
+            <Text style={styles.rowSubtitle}>{t('View and adjust common OpenClaw permissions')}</Text>
+          </View>
+        </View>
+        <ChevronRight size={16} color={colors.textSubtle} strokeWidth={2} />
+      </Pressable>
+
       {toolSettings.toolSettingsError ? (
         <Text style={styles.errorText}>{toolSettings.toolSettingsError}</Text>
       ) : null}
     </ScrollView>
-  );
-}
-
-function ChipRow<T extends string>({
-  options,
-  selected,
-  onSelect,
-  colors,
-  disabled,
-}: {
-  options: { key: T; label: string }[];
-  selected: T;
-  onSelect: (value: T) => void;
-  colors: Colors;
-  disabled: boolean;
-}): React.JSX.Element {
-  const styles = useMemo(() => createChipStyles(colors), [colors]);
-  return (
-    <View style={styles.chipRow}>
-      {options.map((option) => {
-        const active = option.key === selected;
-        return (
-          <Pressable
-            key={option.key}
-            onPress={() => onSelect(option.key)}
-            style={[styles.chip, active && styles.chipActive]}
-            disabled={disabled}
-          >
-            <Text style={[styles.chipText, active && styles.chipTextActive]}>
-              {option.label}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
   );
 }
 
@@ -220,6 +182,7 @@ export function GatewayToolsRouteScreen(): React.JSX.Element {
   const { t } = useTranslation('console');
   const { theme } = useAppTheme();
   const { gateway, gatewayEpoch, config: initialConfig } = useAppContext();
+  const { requirePro } = useProPaywall();
   const navigation =
     useNavigation<NativeStackNavigationProp<ConsoleStackParamList>>();
 
@@ -230,6 +193,11 @@ export function GatewayToolsRouteScreen(): React.JSX.Element {
     hasActiveGateway,
   });
 
+  const handleOpenPermissions = React.useCallback(() => {
+    if (!requirePro('configBackups')) return;
+    openOpenClawPermissions(navigation);
+  }, [navigation, requirePro]);
+
   return (
     <View style={{ flex: 1, backgroundColor: theme.colors.background }}>
       <ScreenHeader title={t('Tools')} topInset={insets.top} onBack={() => navigation.goBack()} />
@@ -238,41 +206,10 @@ export function GatewayToolsRouteScreen(): React.JSX.Element {
         toolSettings={toolSettings}
         hasActiveGateway={hasActiveGateway}
         tabBarHeight={tabBarHeight}
+        onOpenPermissions={handleOpenPermissions}
       />
     </View>
   );
-}
-
-function createChipStyles(colors: Colors) {
-  return StyleSheet.create({
-    chipRow: {
-      flexDirection: 'row',
-      gap: Space.sm,
-      marginTop: Space.sm,
-      flexWrap: 'wrap',
-    },
-    chip: {
-      paddingHorizontal: Space.md,
-      paddingVertical: 7,
-      borderRadius: Radius.lg,
-      borderWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.surfaceMuted,
-    },
-    chipActive: {
-      backgroundColor: colors.primary,
-      borderColor: colors.primary,
-    },
-    chipText: {
-      fontSize: FontSize.sm,
-      fontWeight: FontWeight.medium,
-      color: colors.text,
-    },
-    chipTextActive: {
-      color: colors.primaryText,
-      fontWeight: FontWeight.semibold,
-    },
-  });
 }
 
 function createStyles(colors: Colors) {
@@ -293,6 +230,22 @@ function createStyles(colors: Colors) {
     cardGap: {
       marginTop: Space.md,
     },
+    rowCard: {
+      backgroundColor: colors.surface,
+      borderRadius: Radius.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      overflow: 'hidden',
+      ...Shadow.sm,
+      paddingHorizontal: Space.lg,
+      paddingVertical: 16,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+    },
+    rowPressed: {
+      opacity: 0.82,
+    },
     divider: {
       height: StyleSheet.hairlineWidth,
       backgroundColor: colors.borderStrong,
@@ -301,6 +254,33 @@ function createStyles(colors: Colors) {
     row: {
       paddingHorizontal: Space.lg,
       paddingVertical: 13,
+    },
+    rowLead: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flex: 1,
+      marginRight: Space.md,
+    },
+    rowIconBadge: {
+      width: 34,
+      height: 34,
+      borderRadius: 999,
+      alignItems: 'center',
+      justifyContent: 'center',
+      marginRight: Space.md,
+    },
+    rowText: {
+      flex: 1,
+    },
+    rowTitle: {
+      color: colors.text,
+      fontSize: FontSize.base,
+      fontWeight: FontWeight.medium,
+    },
+    rowSubtitle: {
+      color: colors.textSubtle,
+      fontSize: FontSize.sm,
+      marginTop: 3,
     },
     toggleRow: {
       flexDirection: 'row',

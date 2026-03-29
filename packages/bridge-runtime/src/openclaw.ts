@@ -227,17 +227,341 @@ export type OpenClawDoctorResult = {
   raw?: string;
 };
 
+export type OpenClawPermissionsStatus =
+  | 'available'
+  | 'needs_approval'
+  | 'restricted'
+  | 'disabled'
+  | 'configuration_needed';
+
+export type OpenClawPermissionsSummary = {
+  status: OpenClawPermissionsStatus;
+  summary: string;
+  reasons: string[];
+};
+
+export type OpenClawPermissionsResult = {
+  configPath: string;
+  approvalsPath: string;
+  web: {
+    searchEnabled: boolean;
+    searchProvider: string;
+    searchConfigured: boolean;
+    fetchEnabled: boolean;
+    firecrawlConfigured: boolean;
+  } & OpenClawPermissionsSummary;
+  exec: {
+    currentAgentId: string;
+    currentAgentName: string;
+    toolProfile: 'minimal' | 'coding' | 'messaging' | 'full' | 'unset';
+    execToolAvailable: boolean;
+    hostApprovalsApply: boolean;
+    implicitSandboxFallback: boolean;
+    configuredHost: 'sandbox' | 'gateway' | 'node';
+    effectiveHost: 'sandbox' | 'gateway' | 'node';
+    sandboxMode: 'off' | 'non-main' | 'all';
+    configSecurity: 'deny' | 'allowlist' | 'full';
+    configAsk: 'off' | 'on-miss' | 'always';
+    approvalsExists: boolean;
+    approvalsSecurity: 'deny' | 'allowlist' | 'full';
+    approvalsAsk: 'off' | 'on-miss' | 'always';
+    effectiveSecurity: 'deny' | 'allowlist' | 'full';
+    effectiveAsk: 'off' | 'on-miss' | 'always';
+    allowlistCount: number;
+    toolPolicyDenied: boolean;
+    safeBins: string[];
+    safeBinTrustedDirs: string[];
+    trustedDirWarnings: string[];
+  } & OpenClawPermissionsSummary;
+  codeExecution: OpenClawPermissionsSummary & {
+    inheritsFromExec: true;
+  };
+};
+
 function stripAnsi(text: string): string {
   // eslint-disable-next-line no-control-regex
   return text.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
 }
 
+function collectCliOutput(parts: Array<string | undefined>): string {
+  return parts
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .map((value) => stripAnsi(value.trim()))
+    .join('\n')
+    .trim();
+}
+
+function isUnsupportedJsonOptionOutput(text: string): boolean {
+  return /unknown option ['"]?--json['"]?/i.test(text);
+}
+
+export async function readOpenClawPermissions(): Promise<OpenClawPermissionsResult> {
+  const openclaw = resolveOpenClawPaths();
+  const config = await readJsonFile<Record<string, unknown>>(openclaw.configPath);
+  const approvalsPath = resolveOpenClawExecApprovalsPath();
+  const approvals = await readJsonFile<Record<string, unknown>>(approvalsPath);
+  const configEnv = readConfigEnvVars(config);
+
+  const tools = readRecord(config?.tools);
+  const currentAgent = resolveCurrentAgent(config);
+  const agentTools = readRecord(currentAgent.record?.tools);
+  const web = readRecord(tools?.web);
+  const webSearch = readRecord(web?.search);
+  const webFetch = readRecord(web?.fetch);
+  const exec = resolveMergedExecConfig(tools, agentTools);
+  const toolProfile = resolveToolProfile(tools, agentTools);
+  const toolDeny = uniqueSortedStrings([
+    ...readStringArray(tools?.deny),
+    ...readStringArray(agentTools?.deny),
+  ]);
+
+  const searchEnabled = readBoolean(webSearch?.enabled, true);
+  const searchProvider = readString(webSearch?.provider) ?? 'auto';
+  const searchConfigured = resolveWebSearchConfigured(webSearch, searchProvider, configEnv);
+  const webReasons: string[] = [];
+  let webStatus: OpenClawPermissionsStatus;
+  let webSummary: string;
+  if (toolDeny.includes('web_search') && toolDeny.includes('web_fetch')) {
+    webStatus = 'disabled';
+    webSummary = 'Web search and fetch are blocked by tool policy.';
+    webReasons.push('Global tool policy denies both web_search and web_fetch.');
+  } else if (!searchEnabled && !readBoolean(webFetch?.enabled, true)) {
+    webStatus = 'disabled';
+    webSummary = 'Web search and fetch are turned off.';
+    webReasons.push('tools.web.search.enabled is false.');
+    webReasons.push('tools.web.fetch.enabled is false.');
+  } else if (searchEnabled && !searchConfigured) {
+    webStatus = 'configuration_needed';
+    webSummary = 'Web search is enabled, but no search provider key was found.';
+    webReasons.push(
+      searchProvider === 'auto'
+        ? 'No supported web search provider API key was found in config or current environment.'
+        : `Provider "${searchProvider}" is selected, but its API key was not found in config or current environment.`,
+    );
+  } else {
+    webStatus = 'available';
+    webSummary = 'Common web tools look available.';
+    if (toolDeny.includes('web_search')) {
+      webStatus = 'restricted';
+      webSummary = 'Web fetch is available, but web search is blocked by tool policy.';
+      webReasons.push('Global tool policy denies web_search.');
+    } else if (toolDeny.includes('web_fetch')) {
+      webStatus = 'restricted';
+      webSummary = 'Web search is available, but web fetch is blocked by tool policy.';
+      webReasons.push('Global tool policy denies web_fetch.');
+    } else {
+      if (!searchEnabled) {
+        webReasons.push('tools.web.search.enabled is false.');
+      }
+      if (!readBoolean(webFetch?.enabled, true)) {
+        webReasons.push('tools.web.fetch.enabled is false.');
+      }
+    }
+  }
+
+  const firecrawlConfigured = resolveFirecrawlConfigured(webFetch, configEnv);
+  const configuredHost = readExecHost(exec?.host);
+  const sandboxMode = readSandboxMode(config, currentAgent.id);
+  const implicitSandboxFallback = configuredHost === 'sandbox' && sandboxMode === 'off';
+  const effectiveHost = implicitSandboxFallback
+    ? 'gateway'
+    : configuredHost;
+  const configSecurity = readExecSecurity(
+    exec?.security,
+    configuredHost === 'sandbox' ? 'deny' : 'allowlist',
+  );
+  const configAsk = readExecAsk(exec?.ask, 'on-miss');
+  const safeBins = readStringArray(exec?.safeBins);
+  const safeBinTrustedDirs = uniqueSortedStrings([
+    '/bin',
+    '/usr/bin',
+    ...readStringArray(exec?.safeBinTrustedDirs),
+  ]);
+  const trustedDirWarnings = safeBinTrustedDirs.filter((dir) =>
+    ['/opt/homebrew/bin', '/usr/local/bin', '/opt/local/bin', '/snap/bin'].includes(dir),
+  ).map(
+    (dir) =>
+      `safe-bin trust includes ${dir}; this is often needed, but commands there are treated as explicitly trusted.`,
+  );
+
+  const resolvedApprovals = resolveExecApprovalsSummary(approvals, {
+    security: configSecurity,
+    ask: configAsk,
+  });
+  // OpenClaw only applies exec-approvals host gating on explicit gateway/node paths.
+  // The default host still resolves to "sandbox" even when sandbox mode is off, and
+  // that implicit path does not route through host approvals.
+  const usesHostApprovals = configuredHost === 'gateway' || configuredHost === 'node';
+  const effectiveSecurity = usesHostApprovals
+    ? minExecSecurity(configSecurity, resolvedApprovals.security)
+    : configSecurity;
+  const effectiveAsk = usesHostApprovals
+    ? (resolvedApprovals.ask === 'off' ? 'off' : maxExecAsk(configAsk, resolvedApprovals.ask))
+    : 'off';
+  const toolPolicyDenied = deniesExecTool(toolDeny);
+  const execToolAvailable = toolProfileAllowsExec(toolProfile) && !toolPolicyDenied;
+  const execReasons: string[] = [];
+  let execStatus: OpenClawPermissionsStatus;
+  let execSummary: string;
+
+  if (!execToolAvailable) {
+    execStatus = 'disabled';
+    execSummary = 'This agent cannot run commands right now.';
+    if (!toolProfileAllowsExec(toolProfile)) {
+      execReasons.push(`The current agent uses the ${toolProfile} tool profile, which does not expose command tools.`);
+    }
+    if (toolPolicyDenied) {
+      execReasons.push('A tool deny rule is blocking command execution for the current agent.');
+    }
+  } else if (implicitSandboxFallback) {
+    execStatus = 'available';
+    execSummary = 'Commands currently run directly on this OpenClaw machine.';
+    execReasons.push('The current agent still exposes command tools.');
+    execReasons.push('Sandbox mode is off, so commands are not running in an isolated sandbox.');
+    execReasons.push('OpenClaw is currently falling back to direct host execution on this machine.');
+  } else if (effectiveHost === 'sandbox') {
+    execStatus = 'available';
+    execSummary = 'Commands run inside OpenClaw\'s sandbox.';
+    execReasons.push('The current agent still exposes command tools.');
+    execReasons.push(`Sandbox mode is ${sandboxMode}.`);
+  } else if (effectiveSecurity === 'deny') {
+    execStatus = 'disabled';
+    execSummary = 'Command execution is disabled.';
+    execReasons.push(`Effective exec security resolves to ${effectiveSecurity}.`);
+  } else if (effectiveAsk !== 'off') {
+    execStatus = 'needs_approval';
+    execSummary = 'Commands can run, but exec approvals currently require confirmation.';
+    execReasons.push(`Effective exec ask policy is ${effectiveAsk}.`);
+    if (effectiveSecurity === 'allowlist' && resolvedApprovals.allowlistCount === 0 && safeBins.length === 0) {
+      execReasons.push('No allowlist entries or safe bins are configured yet, so most commands will still be denied.');
+    }
+  } else if (effectiveSecurity === 'allowlist') {
+    execStatus = 'restricted';
+    execSummary = 'Commands are limited to allowlisted executables and safe bins.';
+    execReasons.push('Effective exec security is allowlist.');
+    if (resolvedApprovals.allowlistCount === 0 && safeBins.length === 0) {
+      execReasons.push('No allowlist entries or safe bins are configured yet.');
+    }
+  } else {
+    execStatus = 'available';
+    execSummary = 'Command execution is broadly available.';
+  }
+
+  if (usesHostApprovals && resolvedApprovals.security !== configSecurity) {
+    execReasons.push(
+      `exec-approvals.json is stricter than tools.exec.security (${configSecurity} -> ${resolvedApprovals.security}).`,
+    );
+  }
+  if (usesHostApprovals && resolvedApprovals.ask !== configAsk) {
+    execReasons.push(
+      `exec-approvals.json is stricter than tools.exec.ask (${configAsk} -> ${resolvedApprovals.ask}).`,
+    );
+  }
+
+  if (usesHostApprovals && safeBins.some(isInterpreterLikeSafeBin)) {
+    execStatus = execStatus === 'disabled' ? execStatus : 'restricted';
+    execReasons.push('Interpreter/runtime binaries appear in safeBins and may still be unsafe or blocked.');
+  }
+  if (usesHostApprovals) {
+    execReasons.push(...trustedDirWarnings);
+  }
+  if (!usesHostApprovals) {
+    execReasons.push(
+      `The app controls tools.exec.security=${configSecurity} and tools.exec.ask=${configAsk}, but this current command path is not using OpenClaw's host approval flow.`,
+    );
+  }
+
+  const codeReasons: string[] = [];
+  let codeStatus: OpenClawPermissionsStatus = execStatus;
+  let codeSummary = execSummary;
+  if (!execToolAvailable) {
+    codeStatus = 'disabled';
+    codeSummary = 'Scripts are currently unavailable because this agent cannot run commands.';
+  } else if (implicitSandboxFallback) {
+    codeStatus = 'available';
+    codeSummary = 'Scripts follow the same direct command path as command execution on this machine.';
+    codeReasons.push('Code execution follows the same direct command path as command execution.');
+  } else if (effectiveHost === 'sandbox') {
+    codeStatus = 'available';
+    codeSummary = 'Code runs inside OpenClaw\'s sandbox.';
+    codeReasons.push('Code execution follows the same sandboxed path as command execution.');
+  } else if (effectiveSecurity === 'deny') {
+    codeStatus = 'disabled';
+    codeSummary = 'Code execution is disabled because command execution is disabled.';
+  } else if (effectiveAsk !== 'off') {
+    codeStatus = 'needs_approval';
+    codeSummary = 'Running scripts or code inherits the current exec approval requirement.';
+    codeReasons.push('Interpreter and runtime commands inherit exec approval rules.');
+    codeReasons.push(
+      'Approval-backed interpreter runs are conservative and may be denied when OpenClaw cannot bind one concrete file.',
+    );
+  } else if (effectiveSecurity === 'allowlist') {
+    codeStatus = 'restricted';
+    codeSummary = 'Running scripts is restricted by allowlist rules.';
+    codeReasons.push('Interpreter and runtime commands usually need explicit allowlist entries.');
+  } else {
+    codeStatus = 'available';
+    codeSummary = 'Code execution inherits the current command execution policy and looks available.';
+  }
+  if (safeBins.some(isInterpreterLikeSafeBin)) {
+    codeStatus = codeStatus === 'disabled' ? codeStatus : 'restricted';
+    codeReasons.push('Interpreter/runtime binaries should not rely on safeBins alone.');
+  }
+
+  return {
+    configPath: openclaw.configPath,
+    approvalsPath,
+    web: {
+      status: webStatus,
+      summary: webSummary,
+      reasons: uniqueSortedStrings(webReasons),
+      searchEnabled,
+      searchProvider,
+      searchConfigured,
+      fetchEnabled: readBoolean(webFetch?.enabled, true),
+      firecrawlConfigured,
+    },
+    exec: {
+      currentAgentId: currentAgent.id,
+      currentAgentName: currentAgent.name,
+      toolProfile,
+      execToolAvailable,
+      hostApprovalsApply: usesHostApprovals,
+      implicitSandboxFallback,
+      status: execStatus,
+      summary: execSummary,
+      reasons: uniqueSortedStrings(execReasons),
+      configuredHost,
+      effectiveHost,
+      sandboxMode,
+      configSecurity,
+      configAsk,
+      approvalsExists: approvals != null,
+      approvalsSecurity: resolvedApprovals.security,
+      approvalsAsk: resolvedApprovals.ask,
+      effectiveSecurity,
+      effectiveAsk,
+      allowlistCount: resolvedApprovals.allowlistCount,
+      toolPolicyDenied,
+      safeBins,
+      safeBinTrustedDirs,
+      trustedDirWarnings,
+    },
+    codeExecution: {
+      status: codeStatus,
+      summary: codeSummary,
+      reasons: uniqueSortedStrings(codeReasons),
+      inheritsFromExec: true,
+    },
+  };
+}
+
 export async function runOpenClawDoctor(): Promise<OpenClawDoctorResult> {
   const openclaw = resolveOpenClawPaths();
   try {
-    const { stdout } = await runOpenClawCli(['doctor', '--json'], openclaw);
+    const { stdout, stderr } = await runOpenClawCli(['doctor', '--json'], openclaw);
     try {
-      const parsed = parseEmbeddedJsonValue(stdout) as {
+      const parsed = parseEmbeddedJsonValue(collectCliOutput([stdout, stderr])) as {
         ok?: boolean;
         checks?: unknown[];
         summary?: string;
@@ -262,60 +586,70 @@ export async function runOpenClawDoctor(): Promise<OpenClawDoctorResult> {
         ok: true,
         checks: [],
         summary: '',
-        raw: stripAnsi(stdout.trim()),
+        raw: collectCliOutput([stdout, stderr]),
       };
     }
   } catch (error) {
     // doctor may exit non-zero when issues are found; try to parse stdout
-    if (isExecFileError(error) && typeof error.stdout === 'string' && error.stdout.trim()) {
-      try {
-        const parsed = parseEmbeddedJsonValue(error.stdout) as {
-          ok?: boolean;
-          checks?: unknown[];
-          summary?: string;
-        };
-        const checks: OpenClawDoctorCheckResult[] = Array.isArray(parsed.checks)
-          ? parsed.checks
-            .filter((c): c is Record<string, unknown> => typeof c === 'object' && c != null)
-            .map((c) => ({
-              name: typeof c.name === 'string' ? c.name : 'unknown',
-              status: typeof c.status === 'string' ? c.status : 'unknown',
-              message: typeof c.message === 'string' ? c.message : undefined,
-            }))
-          : [];
-        return {
-          ok: parsed.ok === true,
-          checks,
-          summary: typeof parsed.summary === 'string' ? parsed.summary : '',
-        };
-      } catch {
-        return {
-          ok: false,
-          checks: [],
-          summary: '',
-          raw: stripAnsi(error.stdout.trim()),
-        };
+    if (isExecFileError(error)) {
+      const output = collectCliOutput([error.stdout, error.stderr]);
+      if (output) {
+        if (isUnsupportedJsonOptionOutput(output)) {
+          // Fall through to the plain-text doctor invocation below for older OpenClaw versions.
+        } else {
+          try {
+            const parsed = parseEmbeddedJsonValue(output) as {
+              ok?: boolean;
+              checks?: unknown[];
+              summary?: string;
+            };
+            const checks: OpenClawDoctorCheckResult[] = Array.isArray(parsed.checks)
+              ? parsed.checks
+                .filter((c): c is Record<string, unknown> => typeof c === 'object' && c != null)
+                .map((c) => ({
+                  name: typeof c.name === 'string' ? c.name : 'unknown',
+                  status: typeof c.status === 'string' ? c.status : 'unknown',
+                  message: typeof c.message === 'string' ? c.message : undefined,
+                }))
+              : [];
+            return {
+              ok: parsed.ok === true,
+              checks,
+              summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+            };
+          } catch {
+            return {
+              ok: false,
+              checks: [],
+              summary: '',
+              raw: output,
+            };
+          }
+        }
       }
     }
     // If --json is not supported, try without --json
     try {
-      const { stdout } = await runOpenClawCli(['doctor'], openclaw);
+      const { stdout, stderr } = await runOpenClawCli(['doctor'], openclaw);
       return {
         ok: true,
         checks: [],
         summary: '',
-        raw: stripAnsi(stdout.trim()),
+        raw: collectCliOutput([stdout, stderr]),
       };
     } catch (fallbackError) {
-      if (isExecFileError(fallbackError) && typeof fallbackError.stdout === 'string' && fallbackError.stdout.trim()) {
-        return {
-          ok: false,
-          checks: [],
-          summary: '',
-          raw: stripAnsi(fallbackError.stdout.trim()),
-        };
+      if (isExecFileError(fallbackError)) {
+        const output = collectCliOutput([fallbackError.stdout, fallbackError.stderr]);
+        if (output) {
+          return {
+            ok: false,
+            checks: [],
+            summary: '',
+            raw: output,
+          };
+        }
       }
-      throw formatOpenClawCliError(['doctor'], error);
+      throw fallbackError instanceof Error ? fallbackError : formatOpenClawCliError(['doctor'], fallbackError);
     }
   }
 }
@@ -329,19 +663,22 @@ export type OpenClawDoctorFixResult = {
 export async function runOpenClawDoctorFix(): Promise<OpenClawDoctorFixResult> {
   const openclaw = resolveOpenClawPaths();
   try {
-    const { stdout } = await runOpenClawCli(['doctor', '--fix'], openclaw);
+    const { stdout, stderr } = await runOpenClawCli(['doctor', '--fix'], openclaw);
     return {
       ok: true,
       summary: '',
-      raw: stripAnsi(stdout.trim()),
+      raw: collectCliOutput([stdout, stderr]),
     };
   } catch (error) {
-    if (isExecFileError(error) && typeof error.stdout === 'string' && error.stdout.trim()) {
-      return {
-        ok: false,
-        summary: '',
-        raw: stripAnsi(error.stdout.trim()),
-      };
+    if (isExecFileError(error)) {
+      const output = collectCliOutput([error.stdout, error.stderr]);
+      if (output) {
+        return {
+          ok: false,
+          summary: '',
+          raw: output,
+        };
+      }
     }
     throw formatOpenClawCliError(['doctor', '--fix'], error);
   }
@@ -416,6 +753,337 @@ export async function issueOpenClawBootstrapToken(params: {
 
 function readConfiguredSecret(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function readBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return uniqueSortedStrings(
+    value.filter((entry): entry is string => typeof entry === 'string').map((entry) => entry.trim()),
+  );
+}
+
+function uniqueSortedStrings(values: readonly string[]): string[] {
+  return [...new Set(values.filter((value) => value.trim().length > 0))].sort();
+}
+
+function resolveCurrentAgent(config: Record<string, unknown> | null): {
+  id: string;
+  name: string;
+  record: Record<string, unknown> | null;
+} {
+  const agents = readRecord(config?.agents);
+  const list = Array.isArray(agents?.list) ? agents.list : [];
+  const entries = list
+    .map((entry) => readRecord(entry))
+    .filter((entry): entry is Record<string, unknown> => entry != null);
+  const target = entries.find((entry) => entry.default === true)
+    ?? entries.find((entry) => readString(entry.id) === 'main')
+    ?? entries[0]
+    ?? null;
+  const id = readString(target?.id) ?? 'main';
+  const name = readString(target?.name) ?? id;
+  return { id, name, record: target };
+}
+
+function resolveToolProfile(
+  globalTools: Record<string, unknown> | null,
+  agentTools: Record<string, unknown> | null,
+): 'minimal' | 'coding' | 'messaging' | 'full' | 'unset' {
+  const raw = readString(agentTools?.profile) ?? readString(globalTools?.profile);
+  return raw === 'minimal' || raw === 'coding' || raw === 'messaging' || raw === 'full'
+    ? raw
+    : 'unset';
+}
+
+function toolProfileAllowsExec(profile: 'minimal' | 'coding' | 'messaging' | 'full' | 'unset'): boolean {
+  return profile === 'coding' || profile === 'full' || profile === 'unset';
+}
+
+function deniesExecTool(denyList: readonly string[]): boolean {
+  const normalized = new Set(denyList.map((entry) => entry.trim().toLowerCase()).filter(Boolean));
+  return normalized.has('*')
+    || normalized.has('exec')
+    || normalized.has('bash')
+    || normalized.has('group:runtime');
+}
+
+function resolveMergedExecConfig(
+  globalTools: Record<string, unknown> | null,
+  agentTools: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  const globalExec = readRecord(globalTools?.exec);
+  const agentExec = readRecord(agentTools?.exec);
+  if (!globalExec && !agentExec) {
+    return null;
+  }
+  return {
+    ...(globalExec ?? {}),
+    ...(agentExec ?? {}),
+  };
+}
+
+function readExecHost(value: unknown): 'sandbox' | 'gateway' | 'node' {
+  return value === 'gateway' || value === 'node' || value === 'sandbox' ? value : 'sandbox';
+}
+
+function readSandboxMode(
+  config: Record<string, unknown> | null,
+  agentId = 'main',
+): 'off' | 'non-main' | 'all' {
+  const agents = readRecord(config?.agents);
+  const defaults = readRecord(agents?.defaults);
+  const defaultSandbox = readRecord(defaults?.sandbox);
+  const list = Array.isArray(agents?.list) ? agents.list : [];
+  const targetAgent = list.find((entry) => {
+    const record = readRecord(entry);
+    return readString(record?.id) === agentId;
+  });
+  const agentSandbox = readRecord(readRecord(targetAgent)?.sandbox);
+  const value = readString(agentSandbox?.mode) ?? readString(defaultSandbox?.mode);
+  return value === 'all' || value === 'non-main' || value === 'off' ? value : 'off';
+}
+
+function readExecSecurity(
+  value: unknown,
+  fallback: 'deny' | 'allowlist' | 'full',
+): 'deny' | 'allowlist' | 'full' {
+  return value === 'deny' || value === 'allowlist' || value === 'full' ? value : fallback;
+}
+
+function readExecAsk(
+  value: unknown,
+  fallback: 'off' | 'on-miss' | 'always',
+): 'off' | 'on-miss' | 'always' {
+  return value === 'off' || value === 'on-miss' || value === 'always' ? value : fallback;
+}
+
+function minExecSecurity(
+  a: 'deny' | 'allowlist' | 'full',
+  b: 'deny' | 'allowlist' | 'full',
+): 'deny' | 'allowlist' | 'full' {
+  const order = { deny: 0, allowlist: 1, full: 2 } as const;
+  return order[a] <= order[b] ? a : b;
+}
+
+function maxExecAsk(
+  a: 'off' | 'on-miss' | 'always',
+  b: 'off' | 'on-miss' | 'always',
+): 'off' | 'on-miss' | 'always' {
+  const order = { off: 0, 'on-miss': 1, always: 2 } as const;
+  return order[a] >= order[b] ? a : b;
+}
+
+function resolveWebSearchConfigured(
+  webSearch: Record<string, unknown> | null,
+  provider: string,
+  configEnv: Record<string, string>,
+): boolean {
+  const braveKey =
+    readConfiguredSecret(webSearch?.apiKey)
+    ?? readConfigEnvValue(configEnv, 'BRAVE_API_KEY')
+    ?? readEnvValue('BRAVE_API_KEY', 'BRAVE_API_KEY');
+  const gemini = readRecord(webSearch?.gemini);
+  const geminiKey =
+    readConfiguredSecret(gemini?.apiKey)
+    ?? readConfigEnvValue(configEnv, 'GEMINI_API_KEY')
+    ?? readEnvValue('GEMINI_API_KEY', 'GEMINI_API_KEY');
+  const grok = readRecord(webSearch?.grok);
+  const grokKey =
+    readConfiguredSecret(grok?.apiKey)
+    ?? readConfigEnvValue(configEnv, 'XAI_API_KEY')
+    ?? readEnvValue('XAI_API_KEY', 'XAI_API_KEY');
+  const kimi = readRecord(webSearch?.kimi);
+  const kimiKey =
+    readConfiguredSecret(kimi?.apiKey)
+    ?? readConfigEnvValue(configEnv, 'KIMI_API_KEY', 'MOONSHOT_API_KEY')
+    ?? readConfigEnvValue(configEnv, 'MOONSHOT_API_KEY', 'KIMI_API_KEY')
+    ?? readEnvValue('KIMI_API_KEY', 'MOONSHOT_API_KEY')
+    ?? readEnvValue('MOONSHOT_API_KEY', 'KIMI_API_KEY');
+  const perplexity = readRecord(webSearch?.perplexity);
+  const perplexityKey =
+    readConfiguredSecret(perplexity?.apiKey)
+    ?? readConfigEnvValue(configEnv, 'PERPLEXITY_API_KEY', 'OPENROUTER_API_KEY')
+    ?? readConfigEnvValue(configEnv, 'OPENROUTER_API_KEY', 'PERPLEXITY_API_KEY')
+    ?? readEnvValue('PERPLEXITY_API_KEY', 'OPENROUTER_API_KEY')
+    ?? readEnvValue('OPENROUTER_API_KEY', 'PERPLEXITY_API_KEY');
+
+  const configuredByProvider: Record<string, boolean> = {
+    brave: Boolean(braveKey),
+    gemini: Boolean(geminiKey),
+    grok: Boolean(grokKey),
+    kimi: Boolean(kimiKey),
+    perplexity: Boolean(perplexityKey),
+  };
+
+  if (provider !== 'auto') {
+    return configuredByProvider[provider] === true;
+  }
+
+  return Object.values(configuredByProvider).some(Boolean);
+}
+
+function resolveFirecrawlConfigured(webFetch: Record<string, unknown> | null, configEnv: Record<string, string>): boolean {
+  const firecrawl = readRecord(webFetch?.firecrawl);
+  return Boolean(
+    readConfiguredSecret(firecrawl?.apiKey)
+    ?? readConfigEnvValue(configEnv, 'FIRECRAWL_API_KEY')
+    ?? readEnvValue('FIRECRAWL_API_KEY', 'FIRECRAWL_API_KEY'),
+  );
+}
+
+function readConfigEnvVars(config: Record<string, unknown> | null): Record<string, string> {
+  const env = readRecord(config?.env);
+  if (!env) {
+    return {};
+  }
+
+  const vars = readRecord(env.vars);
+  const result: Record<string, string> = {};
+  if (vars) {
+    for (const [key, value] of Object.entries(vars)) {
+      const normalized = key.trim();
+      if (!normalized) {
+        continue;
+      }
+      const secret = readConfiguredSecret(value);
+      if (secret) {
+        result[normalized] = secret;
+      }
+    }
+  }
+
+  for (const [key, value] of Object.entries(env)) {
+    if (key === 'vars' || key === 'shellEnv') {
+      continue;
+    }
+    const normalized = key.trim();
+    if (!normalized) {
+      continue;
+    }
+    const secret = readConfiguredSecret(value);
+    if (secret) {
+      result[normalized] = secret;
+    }
+  }
+
+  return result;
+}
+
+function readConfigEnvValue(configEnv: Record<string, string>, primary: string, legacy?: string): string | null {
+  const current = configEnv[primary]?.trim();
+  if (current) {
+    return current;
+  }
+  if (!legacy) {
+    return null;
+  }
+  const fallback = configEnv[legacy]?.trim();
+  return fallback || null;
+}
+
+function resolveExecApprovalsSummary(
+  approvals: Record<string, unknown> | null,
+  overrides: {
+    security: 'deny' | 'allowlist' | 'full';
+    ask: 'off' | 'on-miss' | 'always';
+  },
+): {
+  security: 'deny' | 'allowlist' | 'full';
+  ask: 'off' | 'on-miss' | 'always';
+  allowlistCount: number;
+} {
+  const defaults = readRecord(approvals?.defaults);
+  const agents = readRecord(approvals?.agents);
+  const wildcard = readRecord(agents?.['*']);
+  const main = readRecord(agents?.main) ?? readRecord(agents?.default);
+  const security = readExecSecurity(
+    main?.security ?? wildcard?.security ?? defaults?.security,
+    readExecSecurity(defaults?.security, overrides.security),
+  );
+  const ask = readExecAsk(
+    main?.ask ?? wildcard?.ask ?? defaults?.ask,
+    readExecAsk(defaults?.ask, overrides.ask),
+  );
+  const allowlistEntries = [
+    ...readAllowlistEntries(wildcard?.allowlist),
+    ...readAllowlistEntries(main?.allowlist),
+  ];
+  return {
+    security,
+    ask,
+    allowlistCount: uniqueSortedStrings(allowlistEntries.map((entry) => entry.pattern)).length,
+  };
+}
+
+function readAllowlistEntries(value: unknown): Array<{ pattern: string }> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const entries: Array<{ pattern: string }> = [];
+  for (const entry of value) {
+    const record = readRecord(entry);
+    const pattern = readString(record?.pattern);
+    if (pattern) {
+      entries.push({ pattern });
+    }
+  }
+  return entries;
+}
+
+function isInterpreterLikeSafeBin(value: string): boolean {
+  const normalized = value.trim().toLowerCase().split(/[\\/]/).at(-1) ?? '';
+  if (!normalized) {
+    return false;
+  }
+  if (
+    [
+      'ash',
+      'bash',
+      'bun',
+      'cmd',
+      'cmd.exe',
+      'dash',
+      'deno',
+      'fish',
+      'ksh',
+      'lua',
+      'node',
+      'nodejs',
+      'perl',
+      'php',
+      'powershell',
+      'powershell.exe',
+      'pypy',
+      'pwsh',
+      'pwsh.exe',
+      'python',
+      'python2',
+      'python3',
+      'ruby',
+      'sh',
+      'zsh',
+    ].includes(normalized)
+  ) {
+    return true;
+  }
+  return /^(python|ruby|perl|php|node)\d+(?:\.\d+)?$/.test(normalized);
 }
 
 async function readOpenClawConfigString(
@@ -510,7 +1178,7 @@ async function runOpenClawCli(
       });
     });
   } catch (error) {
-    throw formatOpenClawCliError(args, error);
+    throw preserveExecFileErrorDetails(formatOpenClawCliError(args, error), error);
   }
 }
 
@@ -527,6 +1195,17 @@ function formatOpenClawCliError(args: string[], error: unknown): Error {
     return new Error(combined ? `${messagePrefix} failed: ${combined}` : `${messagePrefix} failed.`);
   }
   return error instanceof Error ? error : new Error(`${messagePrefix} failed: ${String(error)}`);
+}
+
+function preserveExecFileErrorDetails(formatted: Error, original: unknown): Error {
+  if (!isExecFileError(original)) {
+    return formatted;
+  }
+  return Object.assign(formatted, {
+    code: original.code,
+    stdout: original.stdout,
+    stderr: original.stderr,
+  });
 }
 
 function isMissingConfigPathError(error: unknown): boolean {
@@ -700,6 +1379,10 @@ function resolveOpenClawPaths(): OpenClawPaths {
   };
 }
 
+function resolveOpenClawExecApprovalsPath(): string {
+  return join(resolveOpenClawHomeDir(), '.openclaw', 'exec-approvals.json');
+}
+
 function resolveActiveOpenClawStateDir(): string {
   const explicitStateDir = readEnvValue('OPENCLAW_STATE_DIR', 'CLAWDBOT_STATE_DIR');
   if (explicitStateDir) {
@@ -731,6 +1414,22 @@ function buildOpenClawStateDirCandidates(): string[] {
       seen.add(value);
       return true;
     });
+}
+
+function resolveOpenClawHomeDir(): string {
+  const explicitHome = process.env.OPENCLAW_HOME?.trim();
+  if (explicitHome) {
+    return resolveUserPath(explicitHome);
+  }
+  const envHome = process.env.HOME?.trim();
+  if (envHome) {
+    return resolveUserPath(envHome);
+  }
+  const userProfile = process.env.USERPROFILE?.trim();
+  if (userProfile) {
+    return resolveUserPath(userProfile);
+  }
+  return resolve(homedir());
 }
 
 function resolveUserPath(input: string): string {

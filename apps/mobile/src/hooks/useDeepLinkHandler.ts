@@ -18,6 +18,7 @@ type RootTabParamList = {
 
 type RootStackParamList = {
   MainTabs: NavigatorScreenParams<RootTabParamList> | undefined;
+  OpenClawPermissions: undefined;
 } & ConsoleStackParamList;
 
 type DeepLinkDeps = {
