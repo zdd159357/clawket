@@ -35,6 +35,12 @@ resolve_java_home() {
     return
   fi
 
+  local brew_java_home="/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
+  if [[ -d "$brew_java_home" ]]; then
+    echo "$brew_java_home"
+    return
+  fi
+
   echo ""
 }
 
@@ -60,10 +66,13 @@ echo "Building Office packaged assets..."
 echo "Building Android release variant with temporary Pro unlock enabled..."
 (
   cd "$ANDROID_DIR"
+  export PATH="$JAVA_HOME_VALUE/bin:$PATH"
   ANDROID_HOME="$ANDROID_HOME_VALUE" \
   JAVA_HOME="$JAVA_HOME_VALUE" \
   EXPO_PUBLIC_UNLOCK_PRO=1 \
-  ./gradlew app:assembleRelease -x lint -x test --configure-on-demand --build-cache \
+  ./gradlew --no-daemon -Dorg.gradle.java.home="$JAVA_HOME_VALUE" \
+    app:assembleRelease -x lint -x test --configure-on-demand --build-cache \
+    -Pclawket.allowDebugReleaseSigning=true \
     -PreactNativeArchitectures=arm64-v8a
 )
 

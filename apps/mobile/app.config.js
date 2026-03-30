@@ -13,6 +13,20 @@ function computeAndroidVersionCode(version) {
   return (parts[0] * 10000) + (parts[1] * 100) + parts[2];
 }
 
+function resolveAndroidVersionCode(version) {
+  const override = process.env.EXPO_ANDROID_VERSION_CODE?.trim();
+  if (override) {
+    const parsed = Number.parseInt(override, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+
+    throw new Error(`Invalid EXPO_ANDROID_VERSION_CODE: ${override}`);
+  }
+
+  return computeAndroidVersionCode(version);
+}
+
 module.exports = ({ config }) => {
   const expoConfig = config ?? baseConfig.expo ?? {};
   const version = String(packageJson.version || '0.0.0');
@@ -27,7 +41,7 @@ module.exports = ({ config }) => {
     },
     android: {
       ...expoConfig.android,
-      versionCode: computeAndroidVersionCode(version),
+      versionCode: resolveAndroidVersionCode(version),
     },
   };
 };

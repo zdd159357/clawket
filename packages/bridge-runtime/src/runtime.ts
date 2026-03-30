@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import type { PeerCertificate } from 'node:tls';
 import type { PairingConfig } from '@clawket/bridge-core';
 import WebSocket, { type RawData } from 'ws';
 import {
@@ -83,11 +84,14 @@ type RuntimeSocket = Pick<
 type RuntimeSocketConnectOptions = {
   headers?: Record<string, string>;
   maxPayload?: number;
+  rejectUnauthorized?: boolean;
+  checkServerIdentity?: (hostname: string, cert: PeerCertificate) => Error | undefined;
 };
 
 const HEARTBEAT_INTERVAL_MS = 10_000;
 const HEARTBEAT_TIMEOUT_MS = 35_000;
 const GATEWAY_RETRY_DELAY_MS = 1_200;
+const GATEWAY_RETRY_MAX_DELAY_MS = 15_000;
 const RECONNECT_BASE_DELAY_MS = 1_000;
 const RECONNECT_MAX_DELAY_MS = 15_000;
 const CONNECT_HANDSHAKE_WARN_DELAY_MS = 8_000;
@@ -105,6 +109,7 @@ export class BridgeRuntime {
   private lastRelayActivityMs = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private gatewayRetryTimer: NodeJS.Timeout | null = null;
+  private gatewayRetryAttempt = 0;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private pendingGatewayMessages: PendingGatewayMessage[] = [];
   private gatewayHandshakeStarted = false;
@@ -156,6 +161,7 @@ export class BridgeRuntime {
     this.gatewayCloseBoundaryPending = false;
     this.clientDemandStartedAtMs = null;
     this.gatewayConnectedAtMs = null;
+    this.gatewayRetryAttempt = 0;
     this.inFlightConnectHandshakes.clear();
     this.relayConnecting = false;
     this.gatewayConnecting = false;
@@ -342,7 +348,10 @@ export class BridgeRuntime {
           this.log(`gateway already connected sinceGatewayOpenMs=${this.elapsedSince(this.gatewayConnectedAtMs)} handshakeStarted=${this.gatewayHandshakeStarted}`);
         }
       }
-      this.ensureGatewayConnected();
+      const queuedConnectRequests = summarizePendingGatewayMessages(this.pendingGatewayMessages).connectRequests;
+      if (shouldKeepGatewayConnected(clientCount, queuedConnectRequests)) {
+        this.ensureGatewayConnected();
+      }
       return;
     }
     if (event === 'client_disconnected') {
@@ -356,7 +365,9 @@ export class BridgeRuntime {
         this.closeGateway();
       } else {
         this.log('client disconnected; gateway remains needed');
-        this.ensureGatewayConnected();
+        if (shouldKeepGatewayConnected(0, queuedConnectRequests)) {
+          this.ensureGatewayConnected();
+        }
       }
       return;
     }
@@ -600,6 +611,7 @@ export class BridgeRuntime {
       this.gatewayConnecting = false;
       this.gatewayHandshakeStarted = false;
       this.gatewayCloseBoundaryPending = false;
+      this.gatewayRetryAttempt = 0;
       this.gatewayConnectedAtMs = Date.now();
       this.updateSnapshot({ gatewayConnected: true, lastError: null });
       this.log(`gateway connected sinceClientDemandMs=${this.elapsedSince(this.clientDemandStartedAtMs)}`);
@@ -758,6 +770,9 @@ export class BridgeRuntime {
     if (!gateway) {
       this.gatewayCloseBoundaryPending = false;
       this.gatewayConnecting = false;
+      if (!shouldReconnectAfterClose) {
+        this.gatewayRetryAttempt = 0;
+      }
       if (shouldReconnectAfterClose) {
         this.ensureGatewayConnected();
       }
@@ -773,6 +788,9 @@ export class BridgeRuntime {
       }
       this.gatewayCloseBoundaryPending = false;
       this.gatewayConnecting = false;
+      if (!shouldReconnectAfterClose) {
+        this.gatewayRetryAttempt = 0;
+      }
       if (shouldReconnectAfterClose) {
         this.ensureGatewayConnected();
       }
@@ -783,13 +801,31 @@ export class BridgeRuntime {
   }
 
   private createWebSocket(url: string, options?: RuntimeSocketConnectOptions): RuntimeSocket {
-    if (this.options.createWebSocket) {
-      return this.options.createWebSocket(url, options);
-    }
-    return new WebSocket(url, {
+    const gatewayTlsOptions = buildLocalGatewayTlsConnectOptions(url);
+    const mergedOptions: RuntimeSocketConnectOptions = {
+      ...gatewayTlsOptions,
+      ...options,
       maxPayload: options?.maxPayload ?? 25 * 1024 * 1024,
-      headers: options?.headers,
-    });
+    };
+    if (this.options.createWebSocket) {
+      return this.options.createWebSocket(url, mergedOptions);
+    }
+    const wsOptions: {
+      maxPayload: number;
+      headers?: Record<string, string>;
+      rejectUnauthorized?: boolean;
+      checkServerIdentity?: never;
+    } = {
+      maxPayload: mergedOptions.maxPayload ?? 25 * 1024 * 1024,
+      headers: mergedOptions.headers,
+    };
+    if (mergedOptions.rejectUnauthorized !== undefined) {
+      wsOptions.rejectUnauthorized = mergedOptions.rejectUnauthorized;
+    }
+    if (mergedOptions.checkServerIdentity) {
+      wsOptions.checkServerIdentity = mergedOptions.checkServerIdentity as never;
+    }
+    return new WebSocket(url, wsOptions);
   }
 
   private observeGatewayResponse(response: { id: string; ok: boolean; errorCode: string | null; errorMessage: string | null }): void {
@@ -835,10 +871,17 @@ export class BridgeRuntime {
       || !shouldKeepGatewayConnected(this.snapshot.clientCount, queuedConnectRequests)
     ) return;
     const delayMs = this.options.gatewayRetryDelayMs ?? GATEWAY_RETRY_DELAY_MS;
+    this.gatewayRetryAttempt += 1;
+    const maxDelayMs = Math.max(delayMs, GATEWAY_RETRY_MAX_DELAY_MS);
+    const retryDelayMs = Math.min(
+      maxDelayMs,
+      Math.round(delayMs * Math.pow(1.7, Math.max(0, this.gatewayRetryAttempt - 1))),
+    );
+    this.log(`gateway reconnect scheduled delayMs=${retryDelayMs} attempt=${this.gatewayRetryAttempt}`);
     this.gatewayRetryTimer = setTimeout(() => {
       this.gatewayRetryTimer = null;
       this.ensureGatewayConnected();
-    }, delayMs);
+    }, retryDelayMs);
   }
 
   private startHeartbeat(): void {
@@ -1130,6 +1173,56 @@ export function patchConnectRequestGatewayAuth(
   } catch {
     return { text, injected: false };
   }
+}
+
+function buildLocalGatewayTlsConnectOptions(url: string): Pick<
+  RuntimeSocketConnectOptions,
+  'rejectUnauthorized' | 'checkServerIdentity'
+> {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'wss:') {
+      return {};
+    }
+    if (!isLoopbackHostname(parsed.hostname)) {
+      return {};
+    }
+    const info = readOpenClawInfo();
+    const expectedFingerprint = info.gatewayTlsFingerprint;
+    if (!info.gatewayTlsEnabled || !expectedFingerprint) {
+      return {};
+    }
+    return {
+      rejectUnauthorized: false,
+      checkServerIdentity: (_hostname: string, cert: PeerCertificate) => {
+        const fingerprint = normalizeFingerprint(
+          typeof cert?.fingerprint256 === 'string' ? cert.fingerprint256 : '',
+        );
+        if (!fingerprint) {
+          return new Error('gateway tls fingerprint unavailable');
+        }
+        if (fingerprint !== expectedFingerprint) {
+          return new Error('gateway tls fingerprint mismatch');
+        }
+        return undefined;
+      },
+    };
+  } catch {
+    return {};
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  return normalized === '127.0.0.1'
+    || normalized === 'localhost'
+    || normalized === '::1'
+    || normalized === '[::1]';
+}
+
+function normalizeFingerprint(input: string): string | null {
+  const normalized = input.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
+  return normalized ? normalized : null;
 }
 
 function formatConnectHandshakeMetaForLog(meta: {

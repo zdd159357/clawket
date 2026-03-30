@@ -1,5 +1,7 @@
+import { X509Certificate } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import type { PeerCertificate } from 'node:tls';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -45,9 +47,20 @@ class FakeSocket extends EventEmitter {
   sent: Array<string | Buffer> = [];
   closeCalls = 0;
   pingCalls = 0;
-  options?: { headers?: Record<string, string>; maxPayload?: number };
+  options?: {
+    headers?: Record<string, string>;
+    maxPayload?: number;
+    rejectUnauthorized?: boolean;
+    checkServerIdentity?: (hostname: string, cert: PeerCertificate) => Error | undefined;
+  };
+  tlsCert?: PeerCertificate;
 
-  constructor(readonly url: string, options?: { headers?: Record<string, string>; maxPayload?: number }) {
+  constructor(readonly url: string, options?: {
+    headers?: Record<string, string>;
+    maxPayload?: number;
+    rejectUnauthorized?: boolean;
+    checkServerIdentity?: (hostname: string, cert: PeerCertificate) => Error | undefined;
+  }) {
     super();
     this.options = options;
   }
@@ -96,6 +109,26 @@ const BASE_CONFIG: PairingConfig = {
   createdAt: '2026-03-11T00:00:00.000Z',
   updatedAt: '2026-03-11T00:00:00.000Z',
 };
+
+const TLS_CERT_PEM = `-----BEGIN CERTIFICATE-----
+MIIDCTCCAfGgAwIBAgIUel0Lv05cjrViyI/H3tABBJxM7NgwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDEyMDEyMjEzMloXDTI2MDEy
+MTEyMjEzMlowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF
+AAOCAQ8AMIIBCgKCAQEA67q+QlqeKbDDGw0z2NWjeOhzw8UXIRoIfF3nTZK5XOM9
+ShYsi1LF6VSIbsqF6tX35aUw8+/vqRhAyUOaRHQoZ937loIu4Avqb3eVUNXgF/+6
+lRO9n4cdeDcYWomVN4Qs14xtkn5UxBBMZFJEE5tK3R0o4C1TIUzNz6puis33YLZv
+Wcl8JQLKKxP6b4G1MRt0OMSjQRs24q2ftRMzw8LI3934rTbWpGSZMpruioOZbFIo
+UFVzj9FO3/fPRZnr6EzLyZpLyc7KE0Xe7FzUjo8zsCa/HWvAuB5F4ttZndchHHMl
+tIkoe7Vrw66VgwIFukTLjBwtLVuG5KQxqxaW0DoM1QIDAQABo1MwUTAdBgNVHQ4E
+FgQUwNdNkEQtd0n/aofzN7/EeYPPPbIwHwYDVR0jBBgwFoAUwNdNkEQtd0n/aofz
+N7/EeYPPPbIwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAnOnw
+o8Az/bL0A6bGHTYra3L9ArIIljMajT6KDHxylR4LhliuVNAznnhP3UkcZbUdjqjp
+MNOM0lej2pNioondtQdXUskZtqWy6+dLbTm1RYQh1lbCCZQ26o7o/oENzjPksLAb
+jRM47DYxRweTyRWQ5t9wvg/xL0Yi1tWq4u4FCNZlBMgdwAEnXNwVWTzRR9RHwy20
+lmUzM8uQ/p42bk4EvPEV4PI1h5G0khQ6x9CtkadCTDs/ZqoUaJMwZBIDSrdJJSLw
+4Vh8Lqzia1CFB4um9J4S1Gm/VZMBjjeGGBJk7VSYn4ZmhPlbPM+6z39lpQGEG0x4
+r1USnb+wUdA7Zoj/mQ==
+-----END CERTIFICATE-----`;
 
 async function createOpenClawStateDir(config: unknown = {
   gateway: {
@@ -530,6 +563,65 @@ describe('bridge runtime protocol helpers', () => {
     await runtime.stop();
   });
 
+  it('does not connect the local gateway when relay demand drops to zero and no connect work is queued', async () => {
+    const sockets: FakeSocket[] = [];
+    const runtime = new BridgeRuntime({
+      config: BASE_CONFIG,
+      gatewayUrl: 'ws://127.0.0.1:18789',
+      createWebSocket: (url) => {
+        const socket = new FakeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    runtime.start();
+    const relay = sockets[0];
+    relay.open();
+
+    relay.message('__clawket_relay_control__:{"event":"client_count","count":0}');
+
+    expect(sockets).toHaveLength(1);
+
+    await runtime.stop();
+  });
+
+  it('backs off gateway reconnect attempts after repeated failures', async () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    const logs: string[] = [];
+    const runtime = new BridgeRuntime({
+      config: BASE_CONFIG,
+      gatewayUrl: 'ws://127.0.0.1:18789',
+      gatewayRetryDelayMs: 10,
+      onLog: (line) => logs.push(line),
+      createWebSocket: (url) => {
+        const socket = new FakeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    runtime.start();
+    const relay = sockets[0];
+    relay.open();
+    relay.message('__clawket_relay_control__:{"event":"client_count","count":1}');
+
+    const gatewayA = sockets[1];
+    gatewayA.closeFromRemote(1006, 'socket hang up');
+
+    expect(logs).toContain('gateway reconnect scheduled delayMs=10 attempt=1');
+
+    await vi.advanceTimersByTimeAsync(10);
+    const gatewayB = sockets[2];
+    gatewayB.closeFromRemote(1006, 'socket hang up');
+
+    expect(logs).toContain('gateway reconnect scheduled delayMs=17 attempt=2');
+
+    await runtime.stop();
+    vi.useRealTimers();
+  });
+
   it('connects to relay with a bearer header and redacts it in logs', async () => {
     const sockets: FakeSocket[] = [];
     const logs: string[] = [];
@@ -555,6 +647,66 @@ describe('bridge runtime protocol helpers', () => {
     expect(logs.join('\n')).not.toContain(BASE_CONFIG.relaySecret);
     expect(logs.some((line) => line.includes(`gatewayId=${BASE_CONFIG.gatewayId}`))).toBe(true);
     expect(logs.join('\n')).not.toContain(BASE_CONFIG.instanceId);
+
+    await runtime.stop();
+  });
+
+  it('uses fingerprint-based trust for local wss gateway connections', async () => {
+    const fingerprint = new X509Certificate(TLS_CERT_PEM).fingerprint256?.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
+    const stateDir = await createOpenClawStateDir({
+      gateway: {
+        port: 18789,
+        tls: {
+          enabled: true,
+        },
+        auth: {
+          mode: 'token',
+          token: 'gateway-token',
+        },
+      },
+    });
+    await mkdir(join(stateDir, 'gateway', 'tls'), { recursive: true });
+    await writeFile(join(stateDir, 'gateway', 'tls', 'gateway-cert.pem'), TLS_CERT_PEM, 'utf8');
+    vi.stubEnv('OPENCLAW_STATE_DIR', stateDir);
+
+    const sockets: FakeSocket[] = [];
+    const runtime = new BridgeRuntime({
+      config: BASE_CONFIG,
+      gatewayUrl: 'wss://127.0.0.1:18789',
+      createWebSocket: (url, options) => {
+        const socket = new FakeSocket(url, options);
+        sockets.push(socket);
+        return socket;
+      },
+    });
+
+    runtime.start();
+    const relay = sockets[0];
+    relay.open();
+
+    relay.message(JSON.stringify({
+      type: 'req',
+      id: 'connect-a',
+      method: 'connect',
+      params: {
+        auth: { token: 'secret' },
+        device: { nonce: 'nonce-a' },
+      },
+    }));
+
+    const gateway = sockets[1];
+    expect(gateway.options?.rejectUnauthorized).toBe(false);
+    expect(typeof gateway.options?.checkServerIdentity).toBe('function');
+    expect(
+      gateway.options?.checkServerIdentity?.('127.0.0.1', {
+        fingerprint256: fingerprint,
+      } as PeerCertificate),
+    ).toBeUndefined();
+    expect(
+      gateway.options?.checkServerIdentity?.('127.0.0.1', {
+        fingerprint256: 'AA:BB:CC',
+      } as PeerCertificate)?.message,
+    ).toBe('gateway tls fingerprint mismatch');
 
     await runtime.stop();
   });

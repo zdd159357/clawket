@@ -70,6 +70,7 @@
   "Syncing conversation...": "会話を同期中...",
   "Compacting context...": "コンテキストを圧縮しています...",
   "Connection Error: Check your network connection and that OpenClaw is running, or run \"clawket pair\" on your OpenClaw computer, then try again.": "Connection Error: ネットワーク接続と OpenClaw の起動状態を確認するか、OpenClaw のコンピューターで「clawket pair」を実行してから再試行してください。",
+  "Direct local TLS gateway connections are not supported in Clawket mobile yet. Disable OpenClaw gateway TLS for LAN pairing, or use Relay/Tailscale instead.": "Clawket mobile は、TLS を有効にしたローカル Gateway への直接接続にまだ対応していません。LAN ペアリングでは OpenClaw の gateway TLS を無効にするか、Relay/Tailscale を使用してください。",
   "Device Pairing Required": "デバイスのペアリングが必要です",
   "Pairing instruction bridge": "このデバイスはまだ承認されていません。\n\nペア済みの OpenClaw マシンで `openclaw devices approve --latest` を実行して承認してください。",
   "Pairing instruction gateway": "このデバイスはまだ承認されていません。承認するには OpenClaw マシンで次のコマンドを実行してください:",

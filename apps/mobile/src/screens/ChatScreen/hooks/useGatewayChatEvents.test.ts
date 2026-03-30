@@ -170,6 +170,10 @@ describe('formatSystemErrorMessage', () => {
 });
 
 describe('shouldDelayConnectionRecoveryMessage', () => {
+  it('returns true for websocket transport errors', () => {
+    expect(shouldDelayConnectionRecoveryMessage('ws_error', 'WebSocket error')).toBe(true);
+  });
+
   it('returns true for websocket open timeout', () => {
     expect(shouldDelayConnectionRecoveryMessage('ws_connect_timeout', 'WebSocket open timed out')).toBe(true);
   });
@@ -184,6 +188,10 @@ describe('shouldDelayConnectionRecoveryMessage', () => {
 });
 
 describe('shouldShowConnectionRecoveryMessage', () => {
+  it('returns true for websocket transport errors', () => {
+    expect(shouldShowConnectionRecoveryMessage('ws_error', 'WebSocket error')).toBe(true);
+  });
+
   it('returns true for pairing required', () => {
     expect(shouldShowConnectionRecoveryMessage('pairing_required', 'Pairing approval timed out. Please retry.')).toBe(true);
   });
@@ -275,5 +283,25 @@ describe('useGatewayChatEvents', () => {
     expect(harness.params.streamStartedAtRef.current).toBeNull();
     expect(harness.params.clearTransientRunPresentation).toHaveBeenCalledWith({ preserveCurrentStream: true });
     expect(harness.params.onStreamFinished).toHaveBeenCalled();
+  });
+
+  it('shows a dedicated message for unsupported direct local TLS gateways', () => {
+    const harness = createHookHarness();
+    renderHook(() => useGatewayChatEvents(harness.params));
+
+    act(() => {
+      harness.gateway.emit('error', {
+        code: 'local_tls_unsupported',
+        message: 'Clawket mobile does not currently support direct local TLS gateway connections.',
+        retryable: false,
+      });
+    });
+
+    expect(harness.getMessages()).toEqual([
+      expect.objectContaining({
+        role: 'system',
+        text: 'Direct local TLS gateway connections are not supported in Clawket mobile yet. Disable OpenClaw gateway TLS for LAN pairing, or use Relay/Tailscale instead.',
+      }),
+    ]);
   });
 });

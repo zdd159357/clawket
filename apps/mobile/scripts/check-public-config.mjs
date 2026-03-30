@@ -53,6 +53,7 @@ function buildConfig() {
   const revenueCatOfferingId = read('EXPO_PUBLIC_REVENUECAT_PRO_OFFERING_ID');
   const revenueCatPackageId = read('EXPO_PUBLIC_REVENUECAT_PRO_PACKAGE_ID');
   const revenueCatTestApiKey = read('EXPO_PUBLIC_REVENUECAT_TEST_API_KEY');
+  const unlockProEnabled = parseBoolean(process.env.EXPO_PUBLIC_UNLOCK_PRO) === true;
 
   const posthogEnabled = enabled('EXPO_PUBLIC_POSTHOG_ENABLED', [posthogApiKey, posthogHost]);
   const revenueCatEnabled = enabled('EXPO_PUBLIC_REVENUECAT_ENABLED', [
@@ -78,6 +79,9 @@ function buildConfig() {
       offeringId: revenueCatOfferingId,
       packageId: revenueCatPackageId,
       testApiKeyConfigured: Boolean(revenueCatTestApiKey),
+    },
+    debugOverrides: {
+      unlockProEnabled,
     },
   };
 }
@@ -117,6 +121,14 @@ function validateConfig(config, platform) {
     if (platform === 'all' && !config.revenueCat.appleApiKeyConfigured && !config.revenueCat.googleApiKeyConfigured) {
       errors.push('RevenueCat is enabled but no platform API key is configured.');
     }
+  }
+
+  if ((platform === 'ios' || platform === 'android' || platform === 'all') && config.revenueCat.testApiKeyConfigured) {
+    errors.push('EXPO_PUBLIC_REVENUECAT_TEST_API_KEY must not be set for store-distribution builds.');
+  }
+
+  if ((platform === 'ios' || platform === 'android' || platform === 'all') && config.debugOverrides.unlockProEnabled) {
+    errors.push('EXPO_PUBLIC_UNLOCK_PRO must not be enabled for store-distribution builds.');
   }
 
   if (platform === 'ios' || platform === 'all') {

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, X509Certificate } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -8,6 +8,8 @@ import { dirname, join, resolve } from 'node:path';
 export type OpenClawInfo = {
   configFound: boolean;
   gatewayPort: number | null;
+  gatewayTlsEnabled: boolean;
+  gatewayTlsFingerprint: string | null;
   authMode: 'token' | 'password' | null;
   token: string | null;
   password: string | null;
@@ -60,10 +62,13 @@ export function resolveGatewayUrl(explicitUrl?: string | null): string {
   const trimmed = explicitUrl?.trim();
   if (trimmed) return trimmed;
   const info = readOpenClawInfo();
+  const protocol = info.gatewayTlsEnabled ? 'wss' : 'ws';
   if (typeof info.gatewayPort === 'number') {
-    return `ws://127.0.0.1:${info.gatewayPort}`;
+    return `${protocol}://127.0.0.1:${info.gatewayPort}`;
   }
-  return DEFAULT_GATEWAY_URL;
+  return info.gatewayTlsEnabled
+    ? DEFAULT_GATEWAY_URL.replace(/^ws:/, 'wss:')
+    : DEFAULT_GATEWAY_URL;
 }
 
 export function readOpenClawInfo(): OpenClawInfo {
@@ -73,6 +78,8 @@ export function readOpenClawInfo(): OpenClawInfo {
     return {
       configFound: false,
       gatewayPort: envGatewayPort,
+      gatewayTlsEnabled: false,
+      gatewayTlsFingerprint: null,
       authMode: null,
       token: readGatewayTokenEnv(),
       password: readGatewayPasswordEnv(),
@@ -80,10 +87,26 @@ export function readOpenClawInfo(): OpenClawInfo {
   }
   try {
     const parsed = JSON.parse(readFileSync(openclaw.configPath, 'utf8')) as {
-      gateway?: { port?: unknown; auth?: { mode?: unknown; token?: unknown; password?: unknown } };
+      gateway?: {
+        port?: unknown;
+        tls?: {
+          enabled?: unknown;
+          certPath?: unknown;
+        };
+        auth?: { mode?: unknown; token?: unknown; password?: unknown };
+      };
     };
     const rawPort = parsed.gateway?.port;
     const configuredGatewayPort = typeof rawPort === 'number' && Number.isInteger(rawPort) ? rawPort : null;
+    const gatewayTlsEnabled = parsed.gateway?.tls?.enabled === true;
+    const gatewayTlsFingerprint = gatewayTlsEnabled
+      ? readGatewayTlsFingerprint({
+          configDir: openclaw.configDir,
+          certPath: typeof parsed.gateway?.tls?.certPath === 'string'
+            ? parsed.gateway.tls.certPath
+            : null,
+        })
+      : null;
     const authMode = parsed.gateway?.auth?.mode === 'token' || parsed.gateway?.auth?.mode === 'password'
       ? parsed.gateway.auth.mode
       : null;
@@ -92,6 +115,8 @@ export function readOpenClawInfo(): OpenClawInfo {
     return {
       configFound: true,
       gatewayPort: envGatewayPort ?? configuredGatewayPort,
+      gatewayTlsEnabled,
+      gatewayTlsFingerprint,
       authMode,
       token,
       password,
@@ -100,11 +125,49 @@ export function readOpenClawInfo(): OpenClawInfo {
     return {
       configFound: true,
       gatewayPort: envGatewayPort,
+      gatewayTlsEnabled: false,
+      gatewayTlsFingerprint: null,
       authMode: null,
       token: readGatewayTokenEnv(),
       password: readGatewayPasswordEnv(),
     };
   }
+}
+
+function readGatewayTlsFingerprint(input: {
+  configDir: string;
+  certPath: string | null;
+}): string | null {
+  const certPath = resolveConfiguredUserPath(
+    input.certPath,
+    join(input.configDir, 'gateway', 'tls', 'gateway-cert.pem'),
+  );
+  if (!existsSync(certPath)) {
+    return null;
+  }
+  try {
+    const certificate = readFileSync(certPath, 'utf8');
+    const fingerprint = new X509Certificate(certificate).fingerprint256 ?? '';
+    return normalizeFingerprint(fingerprint);
+  } catch {
+    return null;
+  }
+}
+
+function resolveConfiguredUserPath(input: string | null, fallback: string): string {
+  const trimmed = input?.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  if (trimmed.startsWith('~/')) {
+    return join(homedir(), trimmed.slice(2));
+  }
+  return resolve(trimmed);
+}
+
+function normalizeFingerprint(input: string): string | null {
+  const normalized = input.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
+  return normalized ? normalized : null;
 }
 
 export function resolveGatewayToken(): string | null {

@@ -5,6 +5,22 @@ Clawket is a mobile client for OpenClaw (iOS/Android, React Native + Expo) insid
 For OpenClaw protocol details and reference implementations, see: `../../../../openclaw` or `/Users/lucy/Desktop/op/openclaw`
 
 If the task involves Android development or building an Android release package, refer to `docs/android-build.md`.
+If the task involves setting up a fresh machine for Android packaging, read `docs/android-onboarding.md` before changing code.
+
+# Android Packaging Notes
+
+For Android release work, keep these facts in mind:
+
+1. The canonical store-build command is `npm run build:android:aab`.
+2. That script now builds Office assets, runs `expo prebuild --platform android --no-install`, and then builds the signed release `.aab`.
+3. Android upload builds depend on local secrets that are not in git:
+   - `apps/mobile/.env.local`
+   - `apps/mobile/android/app/keystore.properties` or `CLAWKET_ANDROID_KEY_*`
+   - the upload keystore file itself
+4. The repo supports overriding Play `versionCode` with `EXPO_ANDROID_VERSION_CODE`.
+5. If `EXPO_ANDROID_VERSION_CODE` is not set, `build:android:aab` will auto-pick a version code based on the current native project state.
+6. On macOS, prefer Homebrew `openjdk@17` at `/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home` for Android builds. This avoids the Gradle `IBM_SEMERU` toolchain issue seen with some other detected JDKs.
+7. Local temporary Pro verification uses `npm run build:android:pro-temp`. Do not confuse it with real Google Play purchase validation.
 
 # Clawket Ecosystem — Cross-Repository Awareness
 

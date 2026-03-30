@@ -20,17 +20,24 @@
         "NSPhotoLibraryAddUsageDescription": "Allow Clawket to save stats posters to your photo library.",
         "NSSpeechRecognitionUsageDescription": "Allow Clawket to transcribe your speech into chat messages.",
         "CFBundleAllowMixedLocalizations": true,
-        "CFBundleLocalizations": ["en", "zh-Hans", "ja", "ko", "de", "es"],
+        "CFBundleLocalizations": [
+          "en",
+          "zh-Hans",
+          "ja",
+          "ko",
+          "de",
+          "es"
+        ],
         "CFBundleDevelopmentRegion": "en",
         "UIPrefersShowingLanguageSettings": true
-      }
+      },
+      "appleTeamId": "C8TM82D73W"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon-foreground.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "package": "com.p697.clawket",
       "permissions": [
@@ -90,6 +97,7 @@
       ],
       "expo-localization",
       "./plugins/with-locales",
+      "./plugins/with-android-release-signing",
       "./plugins/with-xcode-env"
     ],
     "scheme": "clawket"

@@ -1,3 +1,4 @@
+import { X509Certificate } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEVICE_BOOTSTRAP_TOKEN_TTL_MS,
@@ -44,6 +45,26 @@ vi.mock('node:child_process', () => childProcessMock);
 vi.mock('node:fs', () => fsMock);
 vi.mock('node:fs/promises', () => fsPromisesMock);
 vi.mock('node:os', () => osMock);
+
+const TLS_CERT_PEM = `-----BEGIN CERTIFICATE-----
+MIIDCTCCAfGgAwIBAgIUel0Lv05cjrViyI/H3tABBJxM7NgwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDEyMDEyMjEzMloXDTI2MDEy
+MTEyMjEzMlowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF
+AAOCAQ8AMIIBCgKCAQEA67q+QlqeKbDDGw0z2NWjeOhzw8UXIRoIfF3nTZK5XOM9
+ShYsi1LF6VSIbsqF6tX35aUw8+/vqRhAyUOaRHQoZ937loIu4Avqb3eVUNXgF/+6
+lRO9n4cdeDcYWomVN4Qs14xtkn5UxBBMZFJEE5tK3R0o4C1TIUzNz6puis33YLZv
+Wcl8JQLKKxP6b4G1MRt0OMSjQRs24q2ftRMzw8LI3934rTbWpGSZMpruioOZbFIo
+UFVzj9FO3/fPRZnr6EzLyZpLyc7KE0Xe7FzUjo8zsCa/HWvAuB5F4ttZndchHHMl
+tIkoe7Vrw66VgwIFukTLjBwtLVuG5KQxqxaW0DoM1QIDAQABo1MwUTAdBgNVHQ4E
+FgQUwNdNkEQtd0n/aofzN7/EeYPPPbIwHwYDVR0jBBgwFoAUwNdNkEQtd0n/aofz
+N7/EeYPPPbIwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAnOnw
+o8Az/bL0A6bGHTYra3L9ArIIljMajT6KDHxylR4LhliuVNAznnhP3UkcZbUdjqjp
+MNOM0lej2pNioondtQdXUskZtqWy6+dLbTm1RYQh1lbCCZQ26o7o/oENzjPksLAb
+jRM47DYxRweTyRWQ5t9wvg/xL0Yi1tWq4u4FCNZlBMgdwAEnXNwVWTzRR9RHwy20
+lmUzM8uQ/p42bk4EvPEV4PI1h5G0khQ6x9CtkadCTDs/ZqoUaJMwZBIDSrdJJSLw
+4Vh8Lqzia1CFB4um9J4S1Gm/VZMBjjeGGBJk7VSYn4ZmhPlbPM+6z39lpQGEG0x4
+r1USnb+wUdA7Zoj/mQ==
+-----END CERTIFICATE-----`;
 
 describe('openclaw auth resolution', () => {
   afterEach(() => {
@@ -120,6 +141,7 @@ describe('openclaw auth resolution', () => {
     expect(readOpenClawInfo()).toMatchObject({
       configFound: true,
       gatewayPort: 29999,
+      gatewayTlsEnabled: false,
       token: 'gateway-token',
     });
     expect(resolveGatewayUrl()).toBe('ws://127.0.0.1:29999');
@@ -132,8 +154,42 @@ describe('openclaw auth resolution', () => {
     expect(readOpenClawInfo()).toMatchObject({
       configFound: false,
       gatewayPort: 29999,
+      gatewayTlsEnabled: false,
     });
     expect(resolveGatewayUrl()).toBe('ws://127.0.0.1:29999');
+  });
+
+  it('switches the local gateway URL to wss and loads the cert fingerprint when tls is enabled', () => {
+    const fingerprint = new X509Certificate(TLS_CERT_PEM).fingerprint256?.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
+    fsMock.existsSync.mockImplementation((path) =>
+      path === '/Users/tester/.openclaw/openclaw.json'
+      || path === '/Users/tester/.openclaw/gateway/tls/gateway-cert.pem',
+    );
+    fsMock.readFileSync.mockImplementation((path) => {
+      if (path === '/Users/tester/.openclaw/openclaw.json') {
+        return JSON.stringify({
+          gateway: {
+            port: 18789,
+            tls: {
+              enabled: true,
+            },
+            auth: {
+              token: 'gateway-token',
+            },
+          },
+        });
+      }
+      if (path === '/Users/tester/.openclaw/gateway/tls/gateway-cert.pem') {
+        return TLS_CERT_PEM;
+      }
+      throw new Error(`unexpected path: ${String(path)}`);
+    });
+
+    expect(readOpenClawInfo()).toMatchObject({
+      gatewayTlsEnabled: true,
+      gatewayTlsFingerprint: fingerprint,
+    });
+    expect(resolveGatewayUrl()).toBe('wss://127.0.0.1:18789');
   });
 
   it('falls back to the default gateway port when env port is invalid', () => {

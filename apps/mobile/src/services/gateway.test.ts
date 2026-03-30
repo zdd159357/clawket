@@ -331,6 +331,31 @@ describe('GatewayClient', () => {
       expect((globalThis as any).WebSocket).toHaveBeenCalledWith('wss://example.com');
     });
 
+    it('blocks direct local wss connections before opening a socket', () => {
+      const errorListener = jest.fn();
+      const states: string[] = [];
+      client.on('error', errorListener);
+      client.on('connection', (event) => states.push(event.state));
+
+      client.configure({ url: 'wss://192.168.1.8:18789' });
+      client.connect();
+
+      expect((globalThis as any).WebSocket).not.toHaveBeenCalled();
+      expect(errorListener).toHaveBeenCalledWith({
+        code: 'local_tls_unsupported',
+        message: 'Clawket mobile does not currently support direct local TLS gateway connections. Disable OpenClaw gateway TLS for LAN pairing, or use Relay/Tailscale instead.',
+        retryable: false,
+        hint: 'If you are connecting over your local network, set gateway.tls.enabled to false before pairing.',
+      });
+      expect(states).toContain('closed');
+    });
+
+    it('still allows public wss connections', () => {
+      client.configure({ url: 'wss://gateway.example.com' });
+      client.connect();
+      expect((globalThis as any).WebSocket).toHaveBeenCalledWith('wss://gateway.example.com');
+    });
+
     it('does not use relay pairing state while mode is local', async () => {
       jest.useRealTimers();
       const { StorageService } = jest.requireMock('./storage') as {

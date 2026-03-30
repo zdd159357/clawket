@@ -800,6 +800,22 @@ export function useGatewayChatEvents(params: Params) {
     });
 
     const offErr = gateway.on('error', ({ code, message, retryable, hint }) => {
+      if (code === 'local_tls_unsupported') {
+        clearDelayedConnectionRecovery();
+        const signature = `${code}:${message}:${hint ?? ''}`;
+        const now = Date.now();
+        const last = lastFatalErrorRef.current;
+        if (last && last.signature === signature && now - last.at < 20_000) {
+          return;
+        }
+        lastFatalErrorRef.current = { signature, at: now };
+        setMessages((prev) => [...prev, {
+          id: makeId('err'),
+          role: 'system',
+          text: i18n.t('Direct local TLS gateway connections are not supported in Clawket mobile yet. Disable OpenClaw gateway TLS for LAN pairing, or use Relay/Tailscale instead.', { ns: 'chat' }),
+        }]);
+        return;
+      }
       if (shouldShowConnectionRecoveryMessage(code, message)) {
         if (shouldDelayConnectionRecoveryMessage(code, message)) {
           scheduleDelayedConnectionRecovery({ code, message });

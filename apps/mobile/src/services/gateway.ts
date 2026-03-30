@@ -29,6 +29,7 @@ import type { CostSummary, UsageResult } from '../types/usage';
 import type { ToolsCatalogResult } from '../types/index';
 import type { NodeInvokeRequest, CanvasPresentPayload, CanvasNavigatePayload, CanvasEvalPayload, CanvasSnapshotPayload } from '../types/canvas';
 import { StorageService } from './storage';
+import { isUnsupportedDirectLocalTlsConfig } from '../hooks/gatewayConfigForm.utils';
 import {
   hexToBytes,
   bytesToBase64Url,
@@ -315,6 +316,12 @@ export class GatewayClient {
     }
 
     const wsUrl = normalizeWsUrl(this.config.url);
+    const unsupportedLocalTlsReason = this.resolveUnsupportedDirectLocalTlsReason(wsUrl);
+    if (unsupportedLocalTlsReason) {
+      this.blockReconnect(unsupportedLocalTlsReason);
+      this.setState('closed', unsupportedLocalTlsReason.message);
+      return;
+    }
     this.openSocket(wsUrl, 'direct', attemptId);
   }
 
@@ -2305,5 +2312,21 @@ export class GatewayClient {
     }
 
     this.connect();
+  }
+
+  private resolveUnsupportedDirectLocalTlsReason(
+    wsUrl: string,
+  ): { code: string; message: string; hint?: string } | null {
+    if (!isUnsupportedDirectLocalTlsConfig({
+      url: wsUrl,
+      hasRelayConfig: Boolean(this.config?.relay?.gatewayId),
+    })) {
+      return null;
+    }
+    return {
+      code: 'local_tls_unsupported',
+      message: 'Clawket mobile does not currently support direct local TLS gateway connections. Disable OpenClaw gateway TLS for LAN pairing, or use Relay/Tailscale instead.',
+      hint: 'If you are connecting over your local network, set gateway.tls.enabled to false before pairing.',
+    };
   }
 }

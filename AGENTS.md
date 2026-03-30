@@ -29,7 +29,7 @@ This monorepo is in the first migration phase:
 
 ## Repository Instruction Rule
 
-When work touches a specific workspace or subdirectory, read the closest applicable `CLAUDE.md` for that area before making changes. Do not start implementation based only on the monorepo root instructions when a more specific directory-level instruction file exists.
+When work touches a specific workspace or subdirectory, read the closest applicable `AGENTS.md` for that area before making changes. Do not start implementation based only on the monorepo root instructions when a more specific directory-level instruction file exists.
 
 ## Documentation Rule
 

@@ -14,7 +14,7 @@ import {
   toRuntimeConfig,
   type GatewayScanPayload,
 } from '../hooks/gatewayScanFlow';
-import { shouldSuppressDuplicatePairingAlert } from '../hooks/gatewayConfigForm.utils';
+import { isUnsupportedDirectLocalTlsConfig, shouldSuppressDuplicatePairingAlert } from '../hooks/gatewayConfigForm.utils';
 import { getGatewayCameraPermissionAction } from '../utils/gateway-camera-permission';
 import { isMacCatalyst } from '../utils/platform';
 
@@ -73,6 +73,13 @@ export function GatewayScannerProvider({ children }: { children: React.ReactNode
     }
     if (!resolved.url.trim()) {
       hideOverlay();
+      return;
+    }
+    if (isUnsupportedDirectLocalTlsConfig({
+      url: resolved.url,
+      hasRelayConfig: Boolean(resolved.relay?.gatewayId),
+    })) {
+      showPairingFailedAlert(i18n.t('Direct local TLS gateway connections are not supported in Clawket mobile yet. Disable OpenClaw gateway TLS for LAN pairing, or use Relay/Tailscale instead.', { ns: 'chat' }));
       return;
     }
 

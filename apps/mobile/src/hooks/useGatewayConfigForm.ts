@@ -7,7 +7,7 @@ import { useProPaywall } from '../contexts/ProPaywallContext';
 import { analyticsEvents } from '../services/analytics/events';
 import { StorageService } from '../services/storage';
 import { GatewayConfig, GatewayMode, SavedGatewayConfig } from '../types';
-import { shouldSuppressDuplicatePairingAlert } from './gatewayConfigForm.utils';
+import { isUnsupportedDirectLocalTlsConfig, shouldSuppressDuplicatePairingAlert } from './gatewayConfigForm.utils';
 import {
   claimRelayPairing as claimRelayPairingPayload,
   buildDefaultName,
@@ -397,6 +397,13 @@ export function useGatewayConfigForm({ gateway, initialConfig, debugMode, onSave
       showPairingFailedAlert('The scanned QR code did not return a usable Relay URL.');
       return;
     }
+    if (isUnsupportedDirectLocalTlsConfig({
+      url: trimmedUrl,
+      hasRelayConfig: Boolean(resolved.relay?.gatewayId),
+    })) {
+      showPairingFailedAlert(t('Direct local TLS gateway connections are not supported in Clawket mobile yet. Disable OpenClaw gateway TLS for LAN pairing, or use Relay/Tailscale instead.', { ns: 'chat' }));
+      return;
+    }
 
     const nextMode = resolved.mode === 'relay' || resolved.relay ? 'relay' : 'custom';
     const preserveRelayFallbackCredentials = nextMode === 'relay' && Boolean(editingConfigId);
@@ -467,6 +474,13 @@ export function useGatewayConfigForm({ gateway, initialConfig, debugMode, onSave
     const trimmedUrl = resolved.url.trim();
     if (!trimmedUrl) {
       hideOverlay();
+      return;
+    }
+    if (isUnsupportedDirectLocalTlsConfig({
+      url: trimmedUrl,
+      hasRelayConfig: Boolean(resolved.relay?.gatewayId),
+    })) {
+      showPairingFailedAlert(t('Direct local TLS gateway connections are not supported in Clawket mobile yet. Disable OpenClaw gateway TLS for LAN pairing, or use Relay/Tailscale instead.', { ns: 'chat' }));
       return;
     }
 
