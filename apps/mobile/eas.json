@@ -10,26 +10,30 @@
       "ios": {
         "simulator": false
       },
-      "node": "20",
-      "packageManager": "pnpm"
+      "env": {
+        "EXPO_USE_PNPM": "1"
+      }
     },
     "preview": {
       "distribution": "internal",
-      "node": "20",
-      "packageManager": "pnpm"
+      "env": {
+        "EXPO_USE_PNPM": "1"
+      }
     },
     "testflight": {
       "extends": "production",
       "distribution": "store",
       "autoIncrement": true,
-      "node": "20",
-      "packageManager": "pnpm"
+      "env": {
+        "EXPO_USE_PNPM": "1"
+      }
     },
     "production": {
       "distribution": "store",
       "autoIncrement": true,
-      "node": "20",
-      "packageManager": "pnpm"
+      "env": {
+        "EXPO_USE_PNPM": "1"
+      }
     }
   },
   "submit": {
