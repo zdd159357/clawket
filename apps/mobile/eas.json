@@ -12,14 +12,16 @@
       },
       "env": {
         "EXPO_SKIP_NPM_INSTALL": "1",
-        "EXPO_USE_PNPM": "1"
+        "EXPO_USE_PNPM": "1",
+        "NODE_ENV": "development"
       }
     },
     "preview": {
       "distribution": "internal",
       "env": {
         "EXPO_SKIP_NPM_INSTALL": "1",
-        "EXPO_USE_PNPM": "1"
+        "EXPO_USE_PNPM": "1",
+        "NODE_ENV": "production"
       }
     },
     "testflight": {
@@ -28,7 +30,8 @@
       "autoIncrement": true,
       "env": {
         "EXPO_SKIP_NPM_INSTALL": "1",
-        "EXPO_USE_PNPM": "1"
+        "EXPO_USE_PNPM": "1",
+        "NODE_ENV": "production"
       }
     },
     "production": {
@@ -36,7 +39,8 @@
       "autoIncrement": true,
       "env": {
         "EXPO_SKIP_NPM_INSTALL": "1",
-        "EXPO_USE_PNPM": "1"
+        "EXPO_USE_PNPM": "1",
+        "NODE_ENV": "production"
       }
     }
   },
